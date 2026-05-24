@@ -16,7 +16,7 @@ AgentSymphony 当前仅支持 Codex 作为 AI agent runner。`SymphonyElixir.Age
 | R2 | 实现 `Codex.Runner` 适配现有 `Codex.AppServer` | P0 | ZEN-14 |
 | R3 | 实现 `Claude.Runner`，通过 Port 启动 `claude` CLI | P0 | ZEN-15 |
 | R4 | 配置 schema 支持 `runner.type` 选择（"codex" / "claude"） | P0 | ZEN-16 |
-| R5 | Claude runner 输出结构化 JSON（`###SYMPHONY_JSON###` 标记包裹） | P0 | ZEN-15 |
+| R5 | Claude runner 输出结构化 JSON（`###SYMPHONY_JSON_START###` / `###SYMPHONY_JSON_END###` 标记包裹） | P0 | ZEN-15 |
 | R6 | 产物持久化：本地 workspace + Linear comment | P0 | ZEN-17 |
 | R7 | Orchestrator 指标字段泛化（`codex_*` → `runner_*`） | P1 | ZEN-14 |
 | R8 | E2E 测试覆盖 Codex + Claude 双 runner | P1 | ZEN-18 |
@@ -37,7 +37,7 @@ Elixir 中 behaviour 是定义模块契约的标准方式。`SymphonyElixir.Trac
 
 `AppServer` 负责 stdio JSON-RPC 协议细节，属于稳定的底层实现。在其上包装一层 `Codex.Runner` 实现 behaviour，符合"开闭原则"——对扩展开放，对修改关闭。
 
-### 为什么用 `###SYMPHONY_JSON###` 标记？
+### 为什么用 `###SYMPHONY_JSON_START###` / `###SYMPHONY_JSON_END###` 标记？
 
 Claude Code CLI 输出混合了自然语言对话和结构化结果。标记方式允许 runner 从 stdout 中提取 JSON payload，同时保留人类可读的 CLI 输出用于调试。
 
@@ -71,7 +71,7 @@ end
 
 ```elixir
 def run(issue, workspace, worker_host) do
-  runner = Config.settings!().runner.type |> runner_module()
+  runner = Runner.adapter()
 
   with {:ok, session} <- runner.start_session(issue, workspace, worker_host),
        workflow <- Workflow.current(),
