@@ -14,7 +14,7 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
-  @empty_codex_totals %{
+  @empty_runner_totals %{
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
@@ -26,21 +26,31 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    @defaults [
+      running: %{},
+      completed: MapSet.new(),
+      claimed: MapSet.new(),
+      blocked: %{},
+      retry_attempts: %{},
+      runner_totals: nil,
+      runner_rate_limits: nil
+    ]
+
     defstruct [
       :poll_interval_ms,
       :max_concurrent_agents,
       :next_poll_due_at_ms,
       :poll_check_in_progress,
       :tick_timer_ref,
-      :tick_token,
-      running: %{},
-      completed: MapSet.new(),
-      claimed: MapSet.new(),
-      blocked: %{},
-      retry_attempts: %{},
-      codex_totals: nil,
-      codex_rate_limits: nil
+      :tick_token
+      | @defaults
     ]
+
+    @doc "Backward-compat accessor: reads from runner_totals."
+    def codex_totals(%{runner_totals: val}), do: val
+
+    @doc "Backward-compat accessor: reads from runner_rate_limits."
+    def codex_rate_limits(%{runner_rate_limits: val}), do: val
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -61,8 +71,8 @@ defmodule SymphonyElixir.Orchestrator do
       poll_check_in_progress: false,
       tick_timer_ref: nil,
       tick_token: nil,
-      codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      runner_totals: @empty_runner_totals,
+      runner_rate_limits: nil
     }
 
     run_terminal_workspace_cleanup()
@@ -169,8 +179,8 @@ defmodule SymphonyElixir.Orchestrator do
 
         state =
           state
-          |> apply_codex_token_delta(token_delta)
-          |> apply_codex_rate_limits(update)
+          |> apply_runner_token_delta(token_delta)
+          |> apply_runner_rate_limits(update)
 
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
@@ -1407,8 +1417,8 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        blocked: blocked,
-       codex_totals: state.codex_totals,
-       rate_limits: Map.get(state, :codex_rate_limits),
+       runner_totals: state.runner_totals,
+       rate_limits: state.runner_rate_limits,
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
@@ -1543,9 +1553,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
     runtime_seconds = running_seconds(running_entry.started_at, DateTime.utc_now())
 
-    codex_totals =
+    runner_totals =
       apply_token_delta(
-        state.codex_totals,
+        state.runner_totals,
         %{
           input_tokens: 0,
           output_tokens: 0,
@@ -1554,7 +1564,7 @@ defmodule SymphonyElixir.Orchestrator do
         }
       )
 
-    %{state | codex_totals: codex_totals}
+    %{state | runner_totals: runner_totals}
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
@@ -1578,35 +1588,35 @@ defmodule SymphonyElixir.Orchestrator do
     available_slots(state) > 0 and state_slots_available?(issue, state.running)
   end
 
-  defp apply_codex_token_delta(
-         %{codex_totals: codex_totals} = state,
+  defp apply_runner_token_delta(
+         %{runner_totals: runner_totals} = state,
          %{input_tokens: input, output_tokens: output, total_tokens: total} = token_delta
        )
        when is_integer(input) and is_integer(output) and is_integer(total) do
-    %{state | codex_totals: apply_token_delta(codex_totals, token_delta)}
+    %{state | runner_totals: apply_token_delta(runner_totals, token_delta)}
   end
 
-  defp apply_codex_token_delta(state, _token_delta), do: state
+  defp apply_runner_token_delta(state, _token_delta), do: state
 
-  defp apply_codex_rate_limits(%State{} = state, update) when is_map(update) do
+  defp apply_runner_rate_limits(%State{} = state, update) when is_map(update) do
     case extract_rate_limits(update) do
       %{} = rate_limits ->
-        %{state | codex_rate_limits: rate_limits}
+        %{state | runner_rate_limits: rate_limits}
 
       _ ->
         state
     end
   end
 
-  defp apply_codex_rate_limits(state, _update), do: state
+  defp apply_runner_rate_limits(state, _update), do: state
 
-  defp apply_token_delta(codex_totals, token_delta) do
-    input_tokens = Map.get(codex_totals, :input_tokens, 0) + token_delta.input_tokens
-    output_tokens = Map.get(codex_totals, :output_tokens, 0) + token_delta.output_tokens
-    total_tokens = Map.get(codex_totals, :total_tokens, 0) + token_delta.total_tokens
+  defp apply_token_delta(totals, token_delta) do
+    input_tokens = Map.get(totals, :input_tokens, 0) + token_delta.input_tokens
+    output_tokens = Map.get(totals, :output_tokens, 0) + token_delta.output_tokens
+    total_tokens = Map.get(totals, :total_tokens, 0) + token_delta.total_tokens
 
     seconds_running =
-      Map.get(codex_totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
+      Map.get(totals, :seconds_running, 0) + Map.get(token_delta, :seconds_running, 0)
 
     %{
       input_tokens: max(0, input_tokens),

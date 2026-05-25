@@ -193,6 +193,7 @@ defmodule SymphonyElixir.Config.Schema do
         empty_values: []
       )
       |> validate_required([:command])
+      |> SymphonyElixir.Config.Schema.validate_no_shell_metacharacters(:command)
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:read_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
@@ -261,6 +262,51 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule ClaudeConfig do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:command, :string, default: "claude")
+      field(:turn_timeout_ms, :integer, default: 300_000)
+      field(:stall_timeout_ms, :integer, default: 60_000)
+      field(:max_turns, :integer, default: 10)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:command, :turn_timeout_ms, :stall_timeout_ms, :max_turns], empty_values: [])
+      |> validate_required([:command])
+      |> validate_number(:turn_timeout_ms, greater_than: 0)
+      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_number(:max_turns, greater_than: 0)
+    end
+  end
+
+  defmodule Runner do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:type, :string, default: "codex")
+      embeds_one(:codex, SymphonyElixir.Config.Schema.Codex, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:claude, SymphonyElixir.Config.Schema.ClaudeConfig, on_replace: :update, defaults_to_struct: true)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:type], empty_values: [])
+      |> cast_embed(:codex, with: &SymphonyElixir.Config.Schema.Codex.changeset/2)
+      |> cast_embed(:claude, with: &ClaudeConfig.changeset/2)
+    end
+  end
+
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
@@ -268,6 +314,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:runner, Runner, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -275,17 +322,33 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
   def parse(config) when is_map(config) do
-    config
-    |> normalize_keys()
-    |> drop_nil_values()
+    normalized =
+      config
+      |> normalize_keys()
+      |> drop_nil_values()
+      |> migrate_runner()
+
+    runner_cfg = Map.get(config, "runner") || Map.get(config, :runner)
+    has_runner_key = runner_cfg != nil
+    has_runner_type = is_map(runner_cfg) and (Map.has_key?(runner_cfg, "type") or Map.has_key?(runner_cfg, :type))
+
+    normalized
     |> changeset()
     |> apply_action(:validate)
     |> case do
       {:ok, settings} ->
-        {:ok, finalize_settings(settings)}
+        with :ok <- validate_runner_type(settings, has_runner_key, has_runner_type) do
+          {:ok, finalize_settings(settings)}
+        end
 
       {:error, changeset} ->
-        {:error, {:invalid_workflow_config, format_errors(changeset)}}
+        errors_str = format_errors(changeset)
+
+        if String.contains?(errors_str, "invalid_command") do
+          {:error, :invalid_command}
+        else
+          {:error, {:invalid_workflow_config, errors_str}}
+        end
     end
   end
 
@@ -351,6 +414,59 @@ defmodule SymphonyElixir.Config.Schema do
     end)
   end
 
+  # -----------------------------------------------------------------------
+  # Command injection prevention
+  # -----------------------------------------------------------------------
+
+  @shell_metacharacters ~r/[;|&`$(){}]/
+
+  def validate_no_shell_metacharacters(changeset, field) do
+    validate_change(changeset, field, fn ^field, value ->
+      if Regex.match?(@shell_metacharacters, value) do
+        [{field, "invalid_command"}]
+      else
+        []
+      end
+    end)
+  end
+
+  # -----------------------------------------------------------------------
+  # Runner migration & validation
+  # -----------------------------------------------------------------------
+
+  @runner_valid_types ~w(codex claude)
+
+  defp migrate_runner(config) do
+    if Map.has_key?(config, "runner") do
+      config
+    else
+      case Map.get(config, "codex") do
+        nil -> config
+        codex_attrs -> Map.put(config, "runner", %{"type" => "codex", "codex" => codex_attrs})
+      end
+    end
+  end
+
+  defp validate_runner_type(%{runner: %{type: type}}, true, true)
+       when type in @runner_valid_types,
+       do: :ok
+
+  defp validate_runner_type(%{runner: %{type: type}}, false, _)
+       when type in @runner_valid_types,
+       do: :ok
+
+  defp validate_runner_type(%{runner: _runner}, true, false) do
+    {:error, {:invalid_workflow_config, "runner.type is required"}}
+  end
+
+  defp validate_runner_type(%{runner: _runner}, true, true) do
+    {:error,
+     {:invalid_workflow_config,
+      "runner.type must be one of: #{Enum.join(@runner_valid_types, ", ")}"}}
+  end
+
+  defp validate_runner_type(_settings, _has_runner_key, _has_runner_type), do: :ok
+
   defp changeset(attrs) do
     %__MODULE__{}
     |> cast(attrs, [])
@@ -360,6 +476,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:runner, with: &Runner.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
