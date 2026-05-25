@@ -49,88 +49,73 @@ Then AppServer.start_session 被以相同参数调用
 
 ## Feature: Claude.Runner
 
-### Scenario: 启动 Claude CLI session
+### Scenario: 初始化 Claude session
 ```gherkin
-Given 配置 claude.command = "claude --verbose"
+Given 配置 runner.claude.command = "claude"
 And 一个 issue 和 workspace
 When 调用 Claude.Runner.start_session
-Then 通过 Port.open 启动 claude 进程
-And 进程工作目录为 workspace
-And 环境变量包含 SYMPHONY_ISSUE_ID
+Then 返回 {:ok, session} 其中 session 包含 workspace, issue_id, issue_title
+And 不启动任何外部进程
 ```
 
-### Scenario: 发送 prompt 并收集输出
+### Scenario: 通过 System.cmd 执行 turn
 ```gherkin
-Given 一个活跃的 Claude session
+Given 一个 Claude session
 When 调用 run_turn 传入 "Implement factorial function"
-Then 向 Port 发送格式化的 prompt
-And 收集 stdout 直到超时或检测到结束标记
-And 返回完整的输出文本
+Then 通过 System.cmd 启动 claude 子进程，参数包含 "-p", prompt, "--output-format", "json"
+And 工作目录为 session.workspace
+And 返回 {:ok, json_output, session}
 ```
 
-### Scenario: 解析结构化 JSON 结果
+### Scenario: 解析 --output-format json 原生输出
 ```gherkin
-Given Claude 输出包含
+Given Claude CLI 输出为
   """
-  ###SYMPHONY_JSON_START###
-  {"status":"success","artifacts":[{"type":"file","path":"src/fact.clj","content":"(defn fact ..."}]}
-  ###SYMPHONY_JSON_END###
+  {"result":"Implemented factorial in src/fact.ex","session_id":"sess_abc","total_cost_usd":0.01}
   """
 When 调用 Claude.Runner.parse_result
-Then 返回 {:ok, %{status: :success, artifacts: [...]}}
+Then 返回 {:ok, %{status: :success, artifacts: [%{type: :text, content: "Implemented factorial in src/fact.ex"}]}}
 ```
 
-### Scenario: 无 JSON 标记时回退到纯文本
+### Scenario: 解析错误类型 JSON
 ```gherkin
-Given Claude 输出为纯文本 "No changes needed"
-When 调用 Claude.Runner.parse_result
-Then 返回 {:ok, %{status: :success, artifacts: [%{type: :text, content: "No changes needed"}]}}
-```
-
-### Scenario: JSON 解析失败降级
-```gherkin
-Given Claude 输出包含无效 JSON
+Given Claude CLI 输出为
   """
-  ###SYMPHONY_JSON_START###
-  {invalid json here
-  ###SYMPHONY_JSON_END###
+  {"error":"Rate limit exceeded"}
   """
 When 调用 Claude.Runner.parse_result
-Then 返回 {:ok, %{status: :success, artifacts: [%{type: :text, content: <完整原始文本>}]}}
-And 记录 warning 日志
+Then 返回 {:ok, %{status: :error, artifacts: [%{type: :text, content: "Rate limit exceeded"}]}}
 ```
 
-### Scenario: CLI 进程崩溃
+### Scenario: JSON 解码失败
 ```gherkin
-Given 一个活跃的 Claude session
-When CLI 进程意外退出
-Then runner 检测 Port 状态
-And 返回 {:error, {:runner_crashed, <exit_status>}}
+Given Claude CLI 输出为无效 JSON "not json at all"
+When 调用 Claude.Runner.parse_result
+Then 返回 {:error, {:json_decode, <jason_reason>}}
+```
+
+### Scenario: CLI 进程非零退出
+```gherkin
+Given 一个 Claude session
+When CLI 进程以退出码 1 退出
+Then run_turn 返回 {:error, {:claude_exit, 1, <output>}}
 ```
 
 ### Scenario: Turn 超时
 ```gherkin
-Given 一个活跃的 Claude session
+Given 一个 Claude session
 And turn_timeout_ms = 300_000
-When run_turn 执行超过 turn_timeout_ms 无结果
-Then 返回 {:error, {:runner_timeout, :turn, 300_000}}
-And 记录 error 日志
+When System.cmd 执行超过 timeout_ms
+Then 返回 {:error, {:runner_timeout, :turn, timeout_ms}}
+And 子进程被自动终止
 ```
 
-### Scenario: Stall 超时
+### Scenario: stop_session 为 no-op
 ```gherkin
-Given 一个活跃的 Claude session
-And stall_timeout_ms = 60_000
-When CLI 超过 stall_timeout_ms 无 stdout 输出
-Then 返回 {:error, {:runner_timeout, :stall, 60_000}}
-And 强制关闭 Port
-```
-
-### Scenario: Runner 启动失败
-```gherkin
-Given 配置 claude.command = "nonexistent_binary"
-When 调用 Claude.Runner.start_session
-Then 返回 {:error, {:runner_start_failed, "nonexistent_binary", 127}}
+Given 一个 Claude session
+When 调用 stop_session
+Then 返回 :ok
+And 无需关闭任何进程（per-turn 模式无长连接）
 ```
 
 ---
@@ -139,10 +124,10 @@ Then 返回 {:error, {:runner_start_failed, "nonexistent_binary", 127}}
 
 ### Scenario: 阻止命令注入
 ```gherkin
-Given 配置 claude.command = "claude; rm -rf /"
-When 调用 Claude.Runner.start_session
-Then 命令被转义为 "'claude; rm -rf /'"
-And 不会执行 rm 命令
+Given 配置 claude.command 包含 shell 元字符（如 ";", "|", "&"）
+When 加载配置
+Then Config.Schema 验证失败
+And 返回 {:error, :invalid_command}
 ```
 
 ### Scenario: 阻止路径遍历写入 artifact
@@ -171,21 +156,12 @@ Then 返回 {:error, {:artifact_too_large, 1_048_576}}
 
 ## Feature: Performance
 
-### Scenario: 大输出缓冲不 OOM
+### Scenario: 大输出受 timeout 保护
 ```gherkin
 Given Claude 单次输出超过 10MB
-When 调用 collect_output
-Then 使用 {:line, 4096} 缓冲模式
-And 内存使用稳定在 O(1)
-```
-
-### Scenario: Port 优雅关闭
-```gherkin
-Given 一个活跃的 Claude session
-When 调用 stop_session
-Then 发送 "exit\n"
-And 等待 port_close_timeout_ms（默认 5_000ms）
-And 若未退出则强制 Port.close
+When run_turn 执行
+Then System.cmd 通过 timeout_ms 限制执行时间
+And 子进程超时后被自动终止
 ```
 
 ---
@@ -290,6 +266,6 @@ And Linear comment 包含解析后的 artifact
 
 ### Test Isolation
 - 每个测试使用独立 workspace 目录
-- Port 进程在 `on_exit` 中强制关闭
+- System.cmd 子进程在 timeout 后自动终止
 - 环境变量在测试前后恢复
 - 安全测试使用 chroot 或临时目录隔离
