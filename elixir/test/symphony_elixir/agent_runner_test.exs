@@ -81,6 +81,7 @@ defmodule SymphonyElixir.AgentRunnerTest do
     end
 
     test "run/3 function is exported" do
+      Code.ensure_loaded!(SymphonyElixir.AgentRunner)
       assert function_exported?(SymphonyElixir.AgentRunner, :run, 3)
     end
   end

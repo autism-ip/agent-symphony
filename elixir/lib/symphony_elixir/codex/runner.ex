@@ -24,7 +24,7 @@ defmodule SymphonyElixir.Codex.Runner do
   @impl true
   def start_session(issue, workspace, worker_host) do
     Logger.info("Codex.Runner starting session",
-      issue_id: issue[:id] || issue["id"],
+      issue_id: issue.id,
       workspace: workspace,
       worker_host: worker_host
     )

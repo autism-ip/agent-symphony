@@ -31,15 +31,15 @@ defmodule SymphonyElixir.Claude.Runner do
     settings = Config.settings!().runner.claude
 
     Logger.info("Claude.Runner starting session",
-      issue_id: issue[:id] || issue["id"],
+      issue_id: issue.id,
       workspace: workspace,
       worker_host: worker_host
     )
 
     session = %{
       workspace: workspace,
-      issue_id: issue[:id] || issue["id"],
-      issue_title: issue[:title] || issue["title"],
+      issue_id: issue.id,
+      issue_title: issue.title,
       command: settings.command,
       max_turns: settings.max_turns,
       worker_host: worker_host,
