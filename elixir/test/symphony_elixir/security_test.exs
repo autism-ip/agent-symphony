@@ -100,6 +100,22 @@ defmodule SymphonyElixir.SecurityTest do
   end
 
   # ================================================================
+  # Config.Schema — ClaudeConfig command injection prevention
+  # ================================================================
+
+  describe "Config.Schema.parse/1 — ClaudeConfig command injection prevention" do
+    test "rejects claude command containing semicolon" do
+      config = claude_config("claude; rm -rf /")
+      assert {:error, :invalid_command} = Schema.parse(config)
+    end
+
+    test "rejects claude command containing pipe" do
+      config = claude_config("claude | cat /etc/passwd")
+      assert {:error, :invalid_command} = Schema.parse(config)
+    end
+  end
+
+  # ================================================================
   # Helpers
   # ================================================================
 
@@ -107,6 +123,17 @@ defmodule SymphonyElixir.SecurityTest do
     %{
       "codex" => %{
         "command" => command
+      }
+    }
+  end
+
+  defp claude_config(command) do
+    %{
+      "runner" => %{
+        "type" => "claude",
+        "claude" => %{
+          "command" => command
+        }
       }
     }
   end

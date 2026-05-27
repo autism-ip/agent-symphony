@@ -7,8 +7,8 @@ defmodule SymphonyElixir.Codex.Runner do
 
   ## API Adaptation
 
-  `AppServer.start_session/2` takes `(workspace, opts)` — the `issue` parameter
-  from the behaviour contract is dropped since AppServer does not require it.
+  `AppServer.start_session/2` takes `(workspace, opts)` — the `issue` is stored
+  in the session map and forwarded to `AppServer.run_turn/4` on each turn.
   """
 
   @behaviour SymphonyElixir.Runner
@@ -29,13 +29,16 @@ defmodule SymphonyElixir.Codex.Runner do
       worker_host: worker_host
     )
 
-    AppServer.start_session(workspace, worker_host: worker_host)
+    case AppServer.start_session(workspace, worker_host: worker_host) do
+      {:ok, session} -> {:ok, Map.put(session, :issue, issue)}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @impl true
   def run_turn(session, prompt, timeout_ms) do
-    case AppServer.run_turn(session, prompt, [], timeout: timeout_ms) do
-      {:ok, text} -> {:ok, text, session}
+    case AppServer.run_turn(session, prompt, session.issue, timeout: timeout_ms) do
+      {:ok, raw} -> {:ok, extract_text(raw), session}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -47,4 +50,15 @@ defmodule SymphonyElixir.Codex.Runner do
   def parse_result(text) do
     {:ok, %{status: :success, artifacts: [%{type: :text, content: text}]}}
   end
+
+  # ------------------------------------------------------------------
+  # Private helpers
+  # ------------------------------------------------------------------
+
+  # AppServer.run_turn returns {:ok, :turn_completed} on success.
+  # The actual assistant text is emitted via on_message callbacks,
+  # not returned from run_turn. Return empty string for non-binary
+  # values so persist_artifacts can skip gracefully.
+  defp extract_text(raw) when is_binary(raw), do: raw
+  defp extract_text(_non_binary), do: ""
 end

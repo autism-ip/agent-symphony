@@ -5,11 +5,12 @@ defmodule SymphonyElixir.ArtifactStore do
   Artifact types:
     :file    — writes content to workspace/.symphony/artifacts/<path>
     :comment — posts content as a tracker comment on the issue
+    :text    — alias for :comment (raw text posted as tracker comment)
   """
 
   alias SymphonyElixir.Tracker
 
-  @type artifact :: %{type: :file | :comment, path: String.t() | nil, content: String.t()}
+  @type artifact :: %{type: :file | :comment | :text, path: String.t() | nil, content: String.t()}
 
   @max_content_bytes 1_048_576
   @forbidden_extensions ~w(.sh .exe .bat .cmd)
@@ -38,6 +39,10 @@ defmodule SymphonyElixir.ArtifactStore do
 
   defp validate_and_save(_workspace, issue_id, %{type: :comment, content: content}) do
     Tracker.create_comment(issue_id, content)
+  end
+
+  defp validate_and_save(workspace, issue_id, %{type: :text} = artifact) do
+    validate_and_save(workspace, issue_id, %{artifact | type: :comment})
   end
 
   defp validate_path(path) do

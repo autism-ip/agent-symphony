@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Runner, Tracker, Workspace}
+  alias SymphonyElixir.{ArtifactStore, Config, Linear.Issue, PromptBuilder, Runner, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -77,14 +77,15 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp do_run_codex_turns(runner, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
-    timeout_ms = Config.settings!().codex.turn_timeout_ms
+    timeout_ms = runner_turn_timeout(runner)
 
-    with {:ok, _text, session} <-
+    with {:ok, text, session} <-
            runner.run_turn(session, prompt, timeout_ms) do
       Logger.info("Completed agent run for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
       case continue_with_issue?(issue, issue_state_fetcher) do
         {:continue, refreshed_issue} when turn_number < max_turns ->
+          persist_artifacts(runner, workspace, refreshed_issue, text)
           Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
           do_run_codex_turns(
@@ -101,10 +102,13 @@ defmodule SymphonyElixir.AgentRunner do
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          persist_artifacts(runner, workspace, refreshed_issue, text)
 
           :ok
 
-        {:done, _refreshed_issue} ->
+        {:done, refreshed_issue} ->
+          persist_artifacts(runner, workspace, refreshed_issue, text)
+
           :ok
 
         {:error, reason} ->
@@ -183,4 +187,58 @@ defmodule SymphonyElixir.AgentRunner do
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
   end
+
+  # ------------------------------------------------------------------
+  # Runner-aware config helpers
+  # ------------------------------------------------------------------
+
+  defp runner_turn_timeout(SymphonyElixir.Claude.Runner) do
+    Config.settings!().runner.claude.turn_timeout_ms
+  end
+
+  defp runner_turn_timeout(_runner) do
+    Config.settings!().runner.codex.turn_timeout_ms
+  end
+
+  # ------------------------------------------------------------------
+  # Artifact persistence (best-effort)
+  # ------------------------------------------------------------------
+
+  defp persist_artifacts(_runner, _workspace, _issue, ""), do: :ok
+
+  defp persist_artifacts(runner, workspace, issue, text) do
+    try do
+      case runner.parse_result(text) do
+        {:ok, %{artifacts: artifacts}} when is_list(artifacts) and artifacts != [] ->
+          non_empty = Enum.reject(artifacts, &empty_artifact?/1)
+
+          case non_empty do
+            [] ->
+              :ok
+
+            _ ->
+              case ArtifactStore.save(workspace, issue.id, non_empty) do
+                :ok ->
+                  :ok
+
+                {:error, reason} ->
+                  Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
+              end
+          end
+
+        {:ok, _empty_result} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("parse_result failed for #{issue_context(issue)}: #{inspect(reason)}")
+      end
+    rescue
+      e ->
+        Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
+    end
+  end
+
+  defp empty_artifact?(%{type: :text, content: content}) when is_binary(content), do: String.trim(content) == ""
+  defp empty_artifact?(%{type: :comment, content: content}) when is_binary(content), do: String.trim(content) == ""
+  defp empty_artifact?(_artifact), do: false
 end

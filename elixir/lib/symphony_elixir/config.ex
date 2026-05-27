@@ -61,6 +61,26 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
+  # ------------------------------------------------------------------
+  # Codex config helpers — resolve via Schema.codex_fallback/2 so
+  # runner.codex values take priority over top-level codex when set.
+  # ------------------------------------------------------------------
+
+  @spec codex_command() :: String.t()
+  def codex_command, do: Schema.codex_fallback(settings!(), :command)
+
+  @spec codex_turn_timeout_ms() :: pos_integer()
+  def codex_turn_timeout_ms, do: Schema.codex_fallback(settings!(), :turn_timeout_ms)
+
+  @spec codex_read_timeout_ms() :: pos_integer()
+  def codex_read_timeout_ms, do: Schema.codex_fallback(settings!(), :read_timeout_ms)
+
+  @spec codex_stall_timeout_ms() :: non_neg_integer()
+  def codex_stall_timeout_ms, do: Schema.codex_fallback(settings!(), :stall_timeout_ms)
+
+  @spec codex_thread_sandbox() :: String.t()
+  def codex_thread_sandbox, do: Schema.codex_fallback(settings!(), :thread_sandbox)
+
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
     case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do
@@ -106,8 +126,8 @@ defmodule SymphonyElixir.Config do
              Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
         {:ok,
          %{
-           approval_policy: settings.codex.approval_policy,
-           thread_sandbox: settings.codex.thread_sandbox,
+           approval_policy: Schema.codex_fallback(settings, :approval_policy),
+           thread_sandbox: Schema.codex_fallback(settings, :thread_sandbox),
            turn_sandbox_policy: turn_sandbox_policy
          }}
       end

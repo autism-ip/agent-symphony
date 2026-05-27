@@ -280,6 +280,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(attrs, [:command, :turn_timeout_ms, :stall_timeout_ms, :max_turns], empty_values: [])
       |> validate_required([:command])
+      |> SymphonyElixir.Config.Schema.validate_no_shell_metacharacters(:command)
       |> validate_number(:turn_timeout_ms, greater_than: 0)
       |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> validate_number(:max_turns, greater_than: 0)
@@ -354,7 +355,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
-    case settings.codex.turn_sandbox_policy do
+    case codex_fallback(settings, :turn_sandbox_policy) do
       %{} = policy ->
         policy
 
@@ -369,7 +370,7 @@ defmodule SymphonyElixir.Config.Schema do
   @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil, keyword()) ::
           {:ok, map()} | {:error, term()}
   def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
-    case settings.codex.turn_sandbox_policy do
+    case codex_fallback(settings, :turn_sandbox_policy) do
       %{} = policy ->
         {:ok, policy}
 
@@ -500,6 +501,8 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
+    # No sync: runner.codex always carries Ecto defaults, so copying would
+    # overwrite user customizations. Readers use codex_fallback/2 at runtime.
     %{settings | tracker: tracker, workspace: workspace, codex: codex}
   end
 
@@ -621,6 +624,31 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
     {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
   end
+
+  # Runtime fallback: check runner.codex first, fall back to top-level codex.
+  # Runner.codex always carries Ecto defaults, so we compare against defaults
+  # to detect user-provided values. If the runner value equals the struct default,
+  # the user didn't set it — use the top-level codex value instead.
+  @doc false
+  def codex_fallback(settings, field) do
+    case settings.runner do
+      %{type: "codex", codex: runner_codex} ->
+        runner_value = Map.get(runner_codex, field)
+        top_value = Map.get(settings.codex, field)
+        if runner_value != default_codex_value(field), do: runner_value, else: top_value
+      _ ->
+        Map.get(settings.codex, field)
+    end
+  end
+
+  # Must match Codex embedded_schema defaults exactly.
+  defp default_codex_value(:command), do: "codex app-server"
+  defp default_codex_value(:turn_timeout_ms), do: 3_600_000
+  defp default_codex_value(:read_timeout_ms), do: 5_000
+  defp default_codex_value(:stall_timeout_ms), do: 300_000
+  defp default_codex_value(:thread_sandbox), do: "workspace-write"
+  defp default_codex_value(:approval_policy), do: %{"reject" => %{"sandbox_approval" => true, "rules" => true, "mcp_elicitations" => true}}
+  defp default_codex_value(:turn_sandbox_policy), do: nil
 
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace

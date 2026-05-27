@@ -77,6 +77,7 @@ defmodule SymphonyElixir.Codex.RunnerTest do
 
       assert {:ok, session} = Runner.start_session(issue, workspace, worker_host)
       assert is_map(session)
+      assert session.issue == issue
     end
 
     test "propagates AppServer errors" do
@@ -97,21 +98,22 @@ defmodule SymphonyElixir.Codex.RunnerTest do
 
   describe "run_turn/3" do
     test "delegates to AppServer.run_turn and returns {:ok, text, session}" do
-      session = %{port: make_ref(), thread_id: "t1", workspace: "/tmp/ws"}
+      issue = %{id: "LIN-123", title: "Fix bug"}
+      session = %{port: make_ref(), thread_id: "t1", workspace: "/tmp/ws", issue: issue}
       prompt = "Implement factorial"
 
       stub_app_server(%{
-        run_turn: fn ^session, ^prompt, [], [timeout: 30_000] ->
+        run_turn: fn ^session, ^prompt, ^issue, [timeout: 30_000] ->
           {:ok, %{result: "done", session_id: "s1", thread_id: "t1", turn_id: "tr1"}}
         end
       })
 
       assert {:ok, text, ^session} = Runner.run_turn(session, prompt, 30_000)
-      assert is_binary(text) or is_map(text)
+      assert is_binary(text)
     end
 
     test "propagates AppServer errors" do
-      session = %{port: make_ref(), thread_id: "t1", workspace: "/tmp/ws"}
+      session = %{port: make_ref(), thread_id: "t1", workspace: "/tmp/ws", issue: %{id: "1"}}
 
       stub_app_server(%{
         run_turn: fn _session, _prompt, _issue, _opts ->

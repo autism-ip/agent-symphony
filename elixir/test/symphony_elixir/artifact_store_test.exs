@@ -126,6 +126,34 @@ defmodule SymphonyElixir.ArtifactStoreTest do
   end
 
   # ------------------------------------------------------------------
+  # :text artifact — delegates to :comment path
+  # ------------------------------------------------------------------
+
+  test "text artifact posts as tracker comment" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+
+    workspace = unique_workspace("text-artifact")
+
+    try do
+      File.mkdir_p!(workspace)
+
+      artifacts = [
+        %{type: :text, content: "Agent output text"}
+      ]
+
+      assert :ok = ArtifactStore.save(workspace, "ISSUE-4", artifacts)
+
+      assert_received {:memory_tracker_comment, "ISSUE-4", "Agent output text"}
+    after
+      File.rm_rf(workspace)
+      Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+      Application.delete_env(:symphony_elixir, :memory_tracker_issues)
+    end
+  end
+
+  # ------------------------------------------------------------------
   # Helpers
   # ------------------------------------------------------------------
 
