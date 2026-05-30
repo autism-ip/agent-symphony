@@ -1,0 +1,160 @@
+# [INPUT]: 依赖 GitHub pull_request/push 事件、elixir/mise.toml 工具链、elixir/Makefile 门禁命令
+# [OUTPUT]: 对外提供 validate-pr-description、make-all、ci-cd-gate 三个 required check 候选
+# [POS]: .github/workflows 的主门禁流水线，统一 PR 描述校验与 Elixir 质量检查
+# [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+
+name: ci-cd-gate
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-cd-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Validate CI/CD workflow contract
+        run: .github/scripts/validate-ci-cd-gate.sh
+
+  validate-pr-description:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: elixir
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.hex
+            ~/.mix
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-mix-pr-${{ hashFiles('elixir/mise.toml', 'elixir/mix.exs', 'elixir/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-pr-
+            ${{ runner.os }}-mix-
+
+      - name: Install Mix package managers
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Validate PR description format
+        env:
+          PR_BODY_JSON: ${{ toJson(github.event.pull_request.body) }}
+        run: |
+          mix deps.get
+          printf '%s' "$PR_BODY_JSON" | jq -r '.' > /tmp/pr_body.md
+          mix pr_body.check --file /tmp/pr_body.md
+
+  make-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: elixir
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          install: true
+          cache: true
+          working_directory: elixir
+
+      - name: Cache Mix dependencies and build output
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.hex
+            ~/.mix
+            elixir/deps
+            elixir/_build
+          key: ${{ runner.os }}-mix-all-${{ hashFiles('elixir/mise.toml', 'elixir/mix.exs', 'elixir/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-all-
+            ${{ runner.os }}-mix-
+
+      - name: Install Mix package managers
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Run Elixir quality gate
+        run: make all
+
+  ci-cd-gate:
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - ci-cd-contract
+      - validate-pr-description
+      - make-all
+
+    steps:
+      - name: Enforce gate results
+        env:
+          CI_CD_CONTRACT_RESULT: ${{ needs.ci-cd-contract.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          MAKE_ALL_RESULT: ${{ needs.make-all.result }}
+          PR_DESCRIPTION_RESULT: ${{ needs.validate-pr-description.result }}
+        run: |
+          echo "ci-cd-contract: ${CI_CD_CONTRACT_RESULT}"
+          echo "make-all: ${MAKE_ALL_RESULT}"
+          echo "validate-pr-description: ${PR_DESCRIPTION_RESULT}"
+
+          if [ "${CI_CD_CONTRACT_RESULT}" != "success" ]; then
+            echo "::error::ci-cd-contract failed or did not complete successfully"
+            exit 1
+          fi
+
+          if [ "${MAKE_ALL_RESULT}" != "success" ]; then
+            echo "::error::make-all failed or did not complete successfully"
+            exit 1
+          fi
+
+          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${PR_DESCRIPTION_RESULT}" != "success" ]; then
+            echo "::error::validate-pr-description failed or did not complete successfully"
+            exit 1
+          fi
+
+          echo "CI/CD gate passed"
