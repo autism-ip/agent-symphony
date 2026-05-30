@@ -735,6 +735,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     new_state = %{initial_state | retry_attempts: %{"mt-500" => retry_entry}}
     :sys.replace_state(pid, fn _ -> new_state end)
 
+    Workflow.workflow_file_path()
+    |> Path.dirname()
+    |> File.mkdir_p!()
+
+    write_workflow_file!(Workflow.workflow_file_path())
+
     snapshot = GenServer.call(pid, :snapshot)
     assert is_list(snapshot.retrying)
 

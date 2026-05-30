@@ -68,46 +68,45 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, session} <- runner.start_session(issue, workspace, worker_host) do
       try do
-        do_run_codex_turns(runner, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        turn_context = %{
+          codex_update_recipient: codex_update_recipient,
+          issue_state_fetcher: issue_state_fetcher,
+          max_turns: max_turns,
+          opts: opts,
+          runner: runner,
+          workspace: workspace
+        }
+
+        do_run_codex_turns(turn_context, session, issue, 1)
       after
         runner.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(runner, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
-    timeout_ms = runner_turn_timeout(runner)
+  defp do_run_codex_turns(context, session, issue, turn_number) do
+    prompt = build_turn_prompt(issue, context.opts, turn_number, context.max_turns)
+    timeout_ms = runner_turn_timeout(context.runner)
 
     with {:ok, text, session} <-
-           runner.run_turn(session, prompt, timeout_ms) do
-      Logger.info("Completed agent run for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+           context.runner.run_turn(session, prompt, timeout_ms) do
+      Logger.info("Completed agent run for #{issue_context(issue)} workspace=#{context.workspace} turn=#{turn_number}/#{context.max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          persist_artifacts(runner, workspace, refreshed_issue, text)
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      case continue_with_issue?(issue, context.issue_state_fetcher) do
+        {:continue, refreshed_issue} when turn_number < context.max_turns ->
+          persist_artifacts(context.runner, context.workspace, refreshed_issue, text)
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{context.max_turns}")
 
-          do_run_codex_turns(
-            runner,
-            session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+          do_run_codex_turns(context, session, refreshed_issue, turn_number + 1)
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-          persist_artifacts(runner, workspace, refreshed_issue, text)
+          persist_artifacts(context.runner, context.workspace, refreshed_issue, text)
 
           :ok
 
         {:done, refreshed_issue} ->
-          persist_artifacts(runner, workspace, refreshed_issue, text)
+          persist_artifacts(context.runner, context.workspace, refreshed_issue, text)
 
           :ok
 
@@ -207,34 +206,38 @@ defmodule SymphonyElixir.AgentRunner do
   defp persist_artifacts(_runner, _workspace, _issue, ""), do: :ok
 
   defp persist_artifacts(runner, workspace, issue, text) do
-    try do
-      case runner.parse_result(text) do
-        {:ok, %{artifacts: artifacts}} when is_list(artifacts) and artifacts != [] ->
-          non_empty = Enum.reject(artifacts, &empty_artifact?/1)
+    runner
+    |> parsed_artifacts(issue, text)
+    |> save_artifacts(workspace, issue)
+  rescue
+    e ->
+      Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
+  end
 
-          case non_empty do
-            [] ->
-              :ok
+  defp parsed_artifacts(runner, issue, text) do
+    case runner.parse_result(text) do
+      {:ok, %{artifacts: artifacts}} when is_list(artifacts) ->
+        {:ok, Enum.reject(artifacts, &empty_artifact?/1)}
 
-            _ ->
-              case ArtifactStore.save(workspace, issue.id, non_empty) do
-                :ok ->
-                  :ok
+      {:ok, _empty_result} ->
+        :ok
 
-                {:error, reason} ->
-                  Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
-              end
-          end
+      {:error, reason} ->
+        {:warning, "parse_result failed for #{issue_context(issue)}: #{inspect(reason)}"}
+    end
+  end
 
-        {:ok, _empty_result} ->
-          :ok
+  defp save_artifacts(:ok, _workspace, _issue), do: :ok
+  defp save_artifacts({:ok, []}, _workspace, _issue), do: :ok
+  defp save_artifacts({:warning, message}, _workspace, _issue), do: Logger.warning(message)
 
-        {:error, reason} ->
-          Logger.warning("parse_result failed for #{issue_context(issue)}: #{inspect(reason)}")
-      end
-    rescue
-      e ->
-        Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
+  defp save_artifacts({:ok, artifacts}, workspace, issue) do
+    case ArtifactStore.save(workspace, issue.id, artifacts) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
     end
   end
 

@@ -30,11 +30,7 @@ defmodule SymphonyElixir.Claude.Runner do
   def start_session(issue, workspace, worker_host) do
     settings = Config.settings!().runner.claude
 
-    Logger.info("Claude.Runner starting session",
-      issue_id: issue.id,
-      workspace: workspace,
-      worker_host: worker_host
-    )
+    Logger.info("Claude.Runner starting session issue_id=#{issue.id} workspace=#{workspace} worker_host=#{worker_host || "local"}")
 
     session = %{
       workspace: workspace,

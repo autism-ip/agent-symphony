@@ -15,6 +15,11 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
   # ===========================================================================
 
   describe "Config.Schema.parse/1 with codex config (current behavior)" do
+    test "parses empty config with schema defaults" do
+      assert {:ok, %Schema{} = settings} = Schema.parse(%{})
+      assert settings.runner.type == "codex"
+    end
+
     test "parses config with codex command" do
       config = %{"codex" => %{"command" => "codex app-server"}}
 
@@ -205,6 +210,16 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
       assert {:ok, %Schema{} = settings} = Schema.parse(config)
       assert settings.runner.type == "codex"
       assert settings.runner.codex.command == "new-codex"
+    end
+
+    test "codex_fallback uses top-level codex when active runner is not codex" do
+      config = %{
+        "codex" => %{"command" => "legacy-codex"},
+        "runner" => %{"type" => "claude", "claude" => %{"command" => "claude"}}
+      }
+
+      assert {:ok, %Schema{} = settings} = Schema.parse(config)
+      assert Schema.codex_fallback(settings, :command) == "legacy-codex"
     end
   end
 
