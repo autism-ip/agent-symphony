@@ -159,6 +159,10 @@ defmodule SymphonyElixir.GitHub do
     - Implements changes requested in #{issue.identifier}
     - Fixes #{issue.identifier}
 
+    #### Alternatives
+
+    - Agent-driven automated delivery; no manual alternatives considered
+
     #### Test Plan
 
     - [ ] `make -C elixir all`

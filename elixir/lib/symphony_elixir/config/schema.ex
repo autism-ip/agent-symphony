@@ -421,6 +421,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   @shell_metacharacters ~r/[;|&`$(){}]/
 
+  @spec validate_no_shell_metacharacters(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_no_shell_metacharacters(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->
       if Regex.match?(@shell_metacharacters, value) do
@@ -630,6 +631,7 @@ defmodule SymphonyElixir.Config.Schema do
   # to detect user-provided values. If the runner value equals the struct default,
   # the user didn't set it — use the top-level codex value instead.
   @doc false
+  @spec codex_fallback(t(), atom()) :: term()
   def codex_fallback(settings, field) do
     case settings.runner do
       %{type: "codex", codex: runner_codex} ->
@@ -639,8 +641,21 @@ defmodule SymphonyElixir.Config.Schema do
 
       %{type: "claude", claude: runner_claude} ->
         runner_value = Map.get(runner_claude, field)
-        top_value = Map.get(settings.codex, field)
-        if runner_value != default_claude_value(field), do: runner_value, else: top_value
+        default = default_claude_value(field)
+
+        cond do
+          runner_value != nil and runner_value != default ->
+            # User explicitly set a non-default value in runner.claude
+            runner_value
+
+          runner_value != nil ->
+            # User set a value that happens to equal the Claude default — honor it
+            runner_value
+
+          true ->
+            # Field not set in runner.claude — fall back to top-level codex
+            Map.get(settings.codex, field)
+        end
 
       _ ->
         Map.get(settings.codex, field)
