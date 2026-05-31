@@ -30,8 +30,32 @@ defmodule SymphonyElixir.OrchestratorFollowUpTest do
     )
 
     # Mark issue as running so check_pr_follow_ups skips it (not cleaned up)
+    snap_issue = %Issue{
+      id: issue_id,
+      identifier: "MT-SNAP",
+      title: "Snapshot test",
+      description: "Test",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-SNAP"
+    }
+
     :sys.replace_state(pid, fn state ->
-      running_entry = %{pid: self(), ref: make_ref(), identifier: "MT-SNAP", issue: nil, started_at: DateTime.utc_now()}
+      running_entry = %{
+        pid: self(),
+        ref: make_ref(),
+        identifier: "MT-SNAP",
+        issue: snap_issue,
+        session_id: nil,
+        codex_app_server_pid: nil,
+        codex_input_tokens: 0,
+        codex_output_tokens: 0,
+        codex_total_tokens: 0,
+        turn_count: 0,
+        started_at: DateTime.utc_now(),
+        last_codex_timestamp: nil,
+        last_codex_message: nil,
+        last_codex_event: nil
+      }
       %{state |
         running: Map.put(state.running, issue_id, running_entry),
         claimed: MapSet.put(state.claimed, issue_id)
