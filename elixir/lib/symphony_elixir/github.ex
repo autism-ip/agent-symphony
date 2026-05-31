@@ -1,6 +1,6 @@
-# [INPUT]: 依赖 SymphonyElixir.Linear.Issue 结构体，依赖 git/gh CLI
-# [OUTPUT]: 对外提供 deliver/2 交付管道、find_open_pr/2、poll_pr_status/2、ready?/1
-# [POS]: symphony_elixir 的 GitHub 集成模块，被 Orchestrator 在 agent run 完成后调用
+# [INPUT]: 依赖 SymphonyElixir.Linear.Issue 结构体，依赖 git/gh CLI，依赖 SymphonyElixir.SSH
+# [OUTPUT]: 对外提供 deliver/3 交付管道、find_open_pr/2、poll_pr_status/2、ready?/1
+# [POS]: symphony_elixir 的 GitHub 集成模块，被 AgentRunner 在 agent run 完成后调用
 # [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
 
 defmodule SymphonyElixir.GitHub do
@@ -10,11 +10,15 @@ defmodule SymphonyElixir.GitHub do
   Two concerns:
   - **Delivery**: branch → commit → push → draft PR (called after agent run)
   - **PR polling**: detect open PRs, poll status, check readiness
+
+  When `worker_host` is provided, all git/gh commands execute on the remote
+  host via SSH (using `SymphonyElixir.SSH`), enabling delivery from remote
+  worker machines where the workspace actually lives.
   """
 
   require Logger
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{Linear.Issue, SSH}
 
   @type delivery_result :: %{
           branch: String.t(),
@@ -27,6 +31,7 @@ defmodule SymphonyElixir.GitHub do
   @type delivery_error ::
           :no_changes
           | :gh_not_available
+          | :ssh_not_available
           | {:branch_failed, String.t()}
           | {:commit_failed, String.t()}
           | {:push_failed, String.t()}
@@ -42,6 +47,8 @@ defmodule SymphonyElixir.GitHub do
           number: integer()
         }
 
+  @typep host :: String.t() | nil
+
   # ===================================================================
   # Delivery pipeline
   # ===================================================================
@@ -49,21 +56,27 @@ defmodule SymphonyElixir.GitHub do
   @doc """
   Run the full delivery pipeline for an issue workspace.
 
+  When `worker_host` is set, git/gh commands execute via SSH on the remote host.
+  This is required when the workspace lives on a remote worker machine.
+
   Returns `{:ok, delivery_result}` on success or `{:error, reason}` on failure.
   """
-  @spec deliver(Issue.t(), Path.t()) :: {:ok, delivery_result()} | {:error, delivery_error()}
-  def deliver(%Issue{} = issue, workspace_path) when is_binary(workspace_path) do
-    with :ok <- verify_gh_available() do
+  @spec deliver(Issue.t(), Path.t(), keyword()) ::
+          {:ok, delivery_result()} | {:error, delivery_error()}
+  def deliver(%Issue{} = issue, workspace_path, opts \\ []) when is_binary(workspace_path) do
+    worker_host = Keyword.get(opts, :worker_host)
+
+    with :ok <- verify_prerequisites(worker_host) do
       branch = branch_name(issue)
-      has_dirty = has_dirty_files?(workspace_path)
-      has_unpushed = has_unpushed_commits?(branch, workspace_path)
+      has_dirty = has_dirty_files?(worker_host, workspace_path)
+      has_unpushed = has_unpushed_commits?(worker_host, branch, workspace_path)
 
       cond do
         has_dirty ->
-          deliver_full_pipeline(issue, branch, workspace_path)
+          deliver_full_pipeline(issue, branch, workspace_path, worker_host)
 
         has_unpushed ->
-          deliver_push_and_pr(issue, branch, workspace_path)
+          deliver_push_and_pr(issue, branch, workspace_path, worker_host)
 
         true ->
           {:error, :no_changes}
@@ -72,22 +85,22 @@ defmodule SymphonyElixir.GitHub do
   end
 
   # Full pipeline: branch → commit → push → PR
-  defp deliver_full_pipeline(issue, branch, workspace_path) do
-    with {:ok, ^branch} <- create_branch(issue, workspace_path),
-         :ok <- commit_changes(issue, workspace_path),
-         {:ok, commit_sha} <- get_head_sha(workspace_path),
-         :ok <- push_branch(branch, workspace_path),
-         {:ok, pr_number, pr_url} <- find_or_create_pr(issue, branch, workspace_path) do
+  defp deliver_full_pipeline(issue, branch, workspace_path, worker_host) do
+    with {:ok, ^branch} <- create_branch(worker_host, issue, workspace_path),
+         :ok <- commit_changes(worker_host, issue, workspace_path),
+         {:ok, commit_sha} <- get_head_sha(worker_host, workspace_path),
+         :ok <- push_branch(worker_host, branch, workspace_path),
+         {:ok, pr_number, pr_url} <- find_or_create_pr(worker_host, issue, branch, workspace_path) do
       {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
     end
   end
 
   # Recovery pipeline: push unpushed commits → PR (skips commit)
-  defp deliver_push_and_pr(issue, branch, workspace_path) do
-    with {:ok, ^branch} <- ensure_branch(branch, workspace_path),
-         :ok <- push_branch(branch, workspace_path),
-         {:ok, commit_sha} <- get_head_sha(workspace_path),
-         {:ok, pr_number, pr_url} <- find_or_create_pr(issue, branch, workspace_path) do
+  defp deliver_push_and_pr(issue, branch, workspace_path, worker_host) do
+    with {:ok, ^branch} <- ensure_branch(worker_host, branch, workspace_path),
+         :ok <- push_branch(worker_host, branch, workspace_path),
+         {:ok, commit_sha} <- get_head_sha(worker_host, workspace_path),
+         {:ok, pr_number, pr_url} <- find_or_create_pr(worker_host, issue, branch, workspace_path) do
       Logger.info("Recovered unpushed commits for #{issue.identifier} branch=#{branch}")
       {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
     end
@@ -269,6 +282,45 @@ defmodule SymphonyElixir.GitHub do
   def ready?(_pr), do: false
 
   # -------------------------------------------------------------------
+  # Remote/local command routing
+  # -------------------------------------------------------------------
+
+  # Execute a git command, routing through SSH when worker_host is set.
+  @spec git_cmd(host(), [String.t()], String.t()) :: {String.t(), integer()}
+  defp git_cmd(nil, args, workspace_path) do
+    System.cmd("git", args, cd: workspace_path, stderr_to_stdout: true)
+  end
+
+  defp git_cmd(worker_host, args, workspace_path) do
+    git_cmd_str = Enum.join(["git" | args], " ")
+    remote = "cd #{workspace_path} && #{git_cmd_str}"
+
+    case SSH.run(worker_host, remote, stderr_to_stdout: true) do
+      {:ok, result} -> result
+      {:error, reason} -> {"SSH error: #{inspect(reason)}", 1}
+    end
+  end
+
+  # Execute a gh command, routing through SSH when worker_host is set.
+  @spec gh_cmd(host(), [String.t()], String.t()) :: {String.t(), integer()}
+  defp gh_cmd(nil, args, workspace_path) do
+    case System.find_executable("gh") do
+      nil -> {"gh not found", 1}
+      path -> System.cmd(path, args, cd: workspace_path, stderr_to_stdout: true)
+    end
+  end
+
+  defp gh_cmd(worker_host, args, workspace_path) do
+    gh_cmd_str = Enum.join(["gh" | args], " ")
+    remote = "cd #{workspace_path} && #{gh_cmd_str}"
+
+    case SSH.run(worker_host, remote, stderr_to_stdout: true) do
+      {:ok, result} -> result
+      {:error, reason} -> {"SSH error: #{inspect(reason)}", 1}
+    end
+  end
+
+  # -------------------------------------------------------------------
   # Git operations (private)
   # -------------------------------------------------------------------
 
@@ -284,42 +336,38 @@ defmodule SymphonyElixir.GitHub do
 
   defp commit_subject(_issue), do: "symphony: implement changes"
 
-  @spec create_branch(Issue.t(), Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
-  defp create_branch(%Issue{} = issue, workspace_path) do
+  @spec create_branch(host(), Issue.t(), Path.t()) ::
+          {:ok, String.t()} | {:error, delivery_error()}
+  defp create_branch(worker_host, %Issue{} = issue, workspace_path) do
     branch = branch_name(issue)
 
-    case current_branch(workspace_path) do
+    case current_branch(worker_host, workspace_path) do
       {:ok, ^branch} ->
         Logger.info("Already on branch: #{branch}")
         {:ok, branch}
 
       _ ->
-        ensure_branch(branch, workspace_path)
+        ensure_branch(worker_host, branch, workspace_path)
     end
   end
 
-  @spec ensure_branch(String.t(), Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
-  defp ensure_branch(branch, workspace_path) do
-    case System.cmd("git", ["checkout", "-b", branch],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
+  @spec ensure_branch(host(), String.t(), Path.t()) ::
+          {:ok, String.t()} | {:error, delivery_error()}
+  defp ensure_branch(worker_host, branch, workspace_path) do
+    case git_cmd(worker_host, ["checkout", "-b", branch], workspace_path) do
       {_output, 0} ->
         Logger.info("Created branch: #{branch}")
         {:ok, branch}
 
       {_output, _status} ->
-        switch_to_existing_branch(branch, workspace_path)
+        switch_to_existing_branch(worker_host, branch, workspace_path)
     end
   end
 
-  @spec switch_to_existing_branch(String.t(), Path.t()) ::
+  @spec switch_to_existing_branch(host(), String.t(), Path.t()) ::
           {:ok, String.t()} | {:error, delivery_error()}
-  defp switch_to_existing_branch(branch, workspace_path) do
-    case System.cmd("git", ["checkout", branch],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
+  defp switch_to_existing_branch(worker_host, branch, workspace_path) do
+    case git_cmd(worker_host, ["checkout", branch], workspace_path) do
       {_output, 0} ->
         Logger.info("Switched to existing branch: #{branch}")
         {:ok, branch}
@@ -329,33 +377,30 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
-  @spec current_branch(Path.t()) :: {:ok, String.t()} | :error
-  defp current_branch(workspace_path) do
-    case System.cmd("git", ["rev-parse", "--abbrev-ref", "HEAD"],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
+  @spec current_branch(host(), Path.t()) :: {:ok, String.t()} | :error
+  defp current_branch(worker_host, workspace_path) do
+    case git_cmd(worker_host, ["rev-parse", "--abbrev-ref", "HEAD"], workspace_path) do
       {branch, 0} -> {:ok, String.trim(branch)}
       _ -> :error
     end
   end
 
-  @spec commit_changes(Issue.t(), Path.t()) :: :ok | {:error, delivery_error()}
-  defp commit_changes(%Issue{} = issue, workspace_path) do
-    with :ok <- stage_all(workspace_path),
-         do: do_commit(issue, workspace_path)
+  @spec commit_changes(host(), Issue.t(), Path.t()) :: :ok | {:error, delivery_error()}
+  defp commit_changes(worker_host, %Issue{} = issue, workspace_path) do
+    with :ok <- stage_all(worker_host, workspace_path),
+         do: do_commit(worker_host, issue, workspace_path)
   end
 
-  @spec stage_all(Path.t()) :: :ok | {:error, delivery_error()}
-  defp stage_all(workspace_path) do
-    case System.cmd("git", ["add", "-A"], cd: workspace_path, stderr_to_stdout: true) do
+  @spec stage_all(host(), Path.t()) :: :ok | {:error, delivery_error()}
+  defp stage_all(worker_host, workspace_path) do
+    case git_cmd(worker_host, ["add", "-A"], workspace_path) do
       {_output, 0} -> :ok
       {output, _status} -> {:error, {:commit_failed, "git add failed: #{String.trim(output)}"}}
     end
   end
 
-  @spec do_commit(Issue.t(), Path.t()) :: :ok | {:error, delivery_error()}
-  defp do_commit(%Issue{} = issue, workspace_path) do
+  @spec do_commit(host(), Issue.t(), Path.t()) :: :ok | {:error, delivery_error()}
+  defp do_commit(nil, %Issue{} = issue, workspace_path) do
     message_file = Path.join(workspace_path, ".git/COMMIT_MSG_SYMPHONY")
     File.write!(message_file, commit_message(issue))
 
@@ -376,23 +421,39 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
-  @spec get_head_sha(Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
-  defp get_head_sha(workspace_path) do
-    case System.cmd("git", ["rev-parse", "--short", "HEAD"],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
+  defp do_commit(worker_host, %Issue{} = issue, workspace_path) do
+    msg = commit_message(issue) |> String.replace("'", "'\\''")
+    message_path = "#{workspace_path}/.git/COMMIT_MSG_SYMPHONY"
+
+    write_cmd = "echo '#{msg}' > #{message_path}"
+    commit_cmd = "cd #{workspace_path} && git commit -F #{message_path}"
+    clean_cmd = "rm -f #{message_path}"
+    script = "#{write_cmd} && #{commit_cmd}; #{clean_cmd}"
+
+    case SSH.run(worker_host, script, stderr_to_stdout: true) do
+      {:ok, {_output, 0}} ->
+        Logger.info("Committed changes for #{issue.identifier} on #{worker_host}")
+        :ok
+
+      {:ok, {output, _status}} ->
+        {:error, {:commit_failed, String.trim(output)}}
+
+      {:error, reason} ->
+        {:error, {:commit_failed, "SSH error: #{inspect(reason)}"}}
+    end
+  end
+
+  @spec get_head_sha(host(), Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
+  defp get_head_sha(worker_host, workspace_path) do
+    case git_cmd(worker_host, ["rev-parse", "--short", "HEAD"], workspace_path) do
       {sha, 0} -> {:ok, String.trim(sha)}
       {output, _status} -> {:error, {:commit_failed, "failed to get HEAD sha: #{String.trim(output)}"}}
     end
   end
 
-  @spec push_branch(String.t(), Path.t()) :: :ok | {:error, delivery_error()}
-  defp push_branch(branch, workspace_path) do
-    case System.cmd("git", ["push", "-u", "origin", branch],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
+  @spec push_branch(host(), String.t(), Path.t()) :: :ok | {:error, delivery_error()}
+  defp push_branch(worker_host, branch, workspace_path) do
+    case git_cmd(worker_host, ["push", "-u", "origin", branch], workspace_path) do
       {_output, 0} ->
         Logger.info("Pushed branch: #{branch}")
         :ok
@@ -402,12 +463,9 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
-  @spec has_unpushed_commits?(String.t(), Path.t()) :: boolean()
-  defp has_unpushed_commits?(branch, workspace_path) do
-    case System.cmd("git", ["log", "--oneline", "origin/#{branch}..HEAD"],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
+  @spec has_unpushed_commits?(host(), String.t(), Path.t()) :: boolean()
+  defp has_unpushed_commits?(worker_host, branch, workspace_path) do
+    case git_cmd(worker_host, ["log", "--oneline", "origin/#{branch}..HEAD"], workspace_path) do
       {"", 0} -> false
       {_output, 0} -> true
       _ -> false
@@ -418,24 +476,24 @@ defmodule SymphonyElixir.GitHub do
   # GitHub PR operations (gh CLI)
   # -------------------------------------------------------------------
 
-  @spec find_or_create_pr(Issue.t(), String.t(), Path.t()) ::
+  @spec find_or_create_pr(host(), Issue.t(), String.t(), Path.t()) ::
           {:ok, integer(), String.t()} | {:error, delivery_error()}
-  defp find_or_create_pr(%Issue{} = issue, branch, workspace_path) do
-    case detect_existing_pr(branch, workspace_path) do
+  defp find_or_create_pr(worker_host, %Issue{} = issue, branch, workspace_path) do
+    case detect_existing_pr(worker_host, branch, workspace_path) do
       {:ok, pr_number, pr_url} ->
         Logger.info("Reusing existing PR ##{pr_number} for #{issue.identifier}: #{pr_url}")
         {:ok, pr_number, pr_url}
 
       :no_pr ->
-        create_draft_pr(issue, branch, workspace_path)
+        create_draft_pr(worker_host, issue, branch, workspace_path)
     end
   end
 
-  @spec detect_existing_pr(String.t(), Path.t()) ::
+  @spec detect_existing_pr(host(), String.t(), Path.t()) ::
           {:ok, integer(), String.t()} | :no_pr
-  defp detect_existing_pr(branch, workspace_path) do
-    case System.cmd(
-           "gh",
+  defp detect_existing_pr(worker_host, branch, workspace_path) do
+    case gh_cmd(
+           worker_host,
            [
              "pr",
              "list",
@@ -448,8 +506,7 @@ defmodule SymphonyElixir.GitHub do
              "--limit",
              "1"
            ],
-           cd: workspace_path,
-           stderr_to_stdout: true
+           workspace_path
          ) do
       {output, 0} ->
         case Jason.decode(String.trim(output)) do
@@ -465,9 +522,9 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
-  @spec create_draft_pr(Issue.t(), String.t(), Path.t()) ::
+  @spec create_draft_pr(host(), Issue.t(), String.t(), Path.t()) ::
           {:ok, integer(), String.t()} | {:error, delivery_error()}
-  defp create_draft_pr(%Issue{} = issue, branch, workspace_path) do
+  defp create_draft_pr(nil, %Issue{} = issue, branch, workspace_path) do
     title = pr_title(issue)
     body = pr_body(issue)
     body_file = Path.join(workspace_path, ".git/PR_BODY_SYMPHONY")
@@ -500,6 +557,31 @@ defmodule SymphonyElixir.GitHub do
       end
     after
       File.rm(body_file)
+    end
+  end
+
+  defp create_draft_pr(worker_host, %Issue{} = issue, branch, workspace_path) do
+    title = pr_title(issue) |> String.replace("'", "'\\''")
+    body = pr_body(issue) |> String.replace("'", "'\\''")
+    body_path = "#{workspace_path}/.git/PR_BODY_SYMPHONY"
+
+    write_cmd = "echo '#{body}' > #{body_path}"
+
+    create_cmd =
+      "cd #{workspace_path} && gh pr create --title '#{title}' --body-file #{body_path} --base main --head #{branch} --draft"
+
+    clean_cmd = "rm -f #{body_path}"
+    script = "#{write_cmd} && #{create_cmd}; #{clean_cmd}"
+
+    case SSH.run(worker_host, script, stderr_to_stdout: true) do
+      {:ok, {output, 0}} ->
+        parse_pr_output(String.trim(output), issue)
+
+      {:ok, {output, _status}} ->
+        {:error, {:pr_creation_failed, String.trim(output)}}
+
+      {:error, reason} ->
+        {:error, {:pr_creation_failed, "SSH error: #{inspect(reason)}"}}
     end
   end
 
@@ -615,17 +697,23 @@ defmodule SymphonyElixir.GitHub do
   # Utilities
   # -------------------------------------------------------------------
 
-  @spec verify_gh_available() :: :ok | {:error, :gh_not_available}
-  defp verify_gh_available do
+  @spec verify_prerequisites(host()) :: :ok | {:error, delivery_error()}
+  defp verify_prerequisites(nil) do
     case System.find_executable("gh") do
       nil -> {:error, :gh_not_available}
       _path -> :ok
     end
   end
 
-  @spec has_dirty_files?(Path.t()) :: boolean()
-  defp has_dirty_files?(workspace_path) do
-    case System.cmd("git", ["status", "--porcelain"], cd: workspace_path, stderr_to_stdout: true) do
+  defp verify_prerequisites(_worker_host) do
+    # For remote workers, gh availability is checked on the remote host
+    # when the command executes. SSH availability is checked by SSH.run/3.
+    :ok
+  end
+
+  @spec has_dirty_files?(host(), Path.t()) :: boolean()
+  defp has_dirty_files?(worker_host, workspace_path) do
+    case git_cmd(worker_host, ["status", "--porcelain"], workspace_path) do
       {"", 0} -> false
       _ -> true
     end

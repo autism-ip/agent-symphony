@@ -133,8 +133,7 @@ defmodule SymphonyElixir.Claude.Runner do
     case session.worker_host do
       host when is_binary(host) and host != "" ->
         remote_script = "cd #{shell_escape(session.workspace)} && #{local_cmd}"
-        ssh_cmd = SSH.remote_shell_command(remote_script)
-        {"ssh", [host, ssh_cmd]}
+        {"ssh", SSH.ssh_args(host, remote_script)}
 
       _ ->
         {"/bin/sh", ["-c", "exec \"$0\" \"$@\" </dev/null", session.command | cli_args]}

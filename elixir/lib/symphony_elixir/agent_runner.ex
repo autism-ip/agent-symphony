@@ -254,8 +254,10 @@ defmodule SymphonyElixir.AgentRunner do
   # GitHub delivery (best-effort, post-run)
   # ------------------------------------------------------------------
 
-  defp attempt_delivery(%Issue{} = issue, workspace, _worker_host) do
-    case GitHub.deliver(issue, workspace) do
+  defp attempt_delivery(%Issue{} = issue, workspace, worker_host) do
+    opts = if worker_host, do: [worker_host: worker_host], else: []
+
+    case GitHub.deliver(issue, workspace, opts) do
       {:ok, delivery} ->
         Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")
         report_delivery(issue, delivery)
