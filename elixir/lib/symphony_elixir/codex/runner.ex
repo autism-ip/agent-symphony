@@ -57,8 +57,7 @@ defmodule SymphonyElixir.Codex.Runner do
 
   # AppServer.run_turn returns {:ok, :turn_completed} on success.
   # The actual assistant text is emitted via on_message callbacks,
-  # not returned from run_turn. Return empty string for non-binary
-  # values so persist_artifacts can skip gracefully.
-  defp extract_text(raw) when is_binary(raw), do: raw
-  defp extract_text(_non_binary), do: ""
+  # not returned from run_turn. Return empty string so persist_artifacts
+  # can skip gracefully.
+  defp extract_text(_raw), do: ""
 end
