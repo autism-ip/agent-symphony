@@ -421,6 +421,7 @@ defmodule SymphonyElixir.Config.Schema do
 
   @shell_metacharacters ~r/[;|&`$(){}]/
 
+  @spec validate_no_shell_metacharacters(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_no_shell_metacharacters(changeset, field) do
     validate_change(changeset, field, fn ^field, value ->
       if Regex.match?(@shell_metacharacters, value) do
@@ -461,9 +462,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_runner_type(%{runner: _runner}, true, true) do
-    {:error,
-     {:invalid_workflow_config,
-      "runner.type must be one of: #{Enum.join(@runner_valid_types, ", ")}"}}
+    {:error, {:invalid_workflow_config, "runner.type must be one of: #{Enum.join(@runner_valid_types, ", ")}"}}
   end
 
   defp validate_runner_type(_settings, _has_runner_key, _has_runner_type), do: :ok
@@ -630,6 +629,7 @@ defmodule SymphonyElixir.Config.Schema do
   # to detect user-provided values. If the runner value equals the struct default,
   # the user didn't set it — use the top-level codex value instead.
   @doc false
+  @spec codex_fallback(t(), atom()) :: term()
   def codex_fallback(settings, field) do
     case settings.runner do
       %{type: "codex", codex: runner_codex} ->
