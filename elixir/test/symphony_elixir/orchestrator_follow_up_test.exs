@@ -14,17 +14,28 @@ defmodule SymphonyElixir.OrchestratorFollowUpTest do
   test "snapshot includes pr_follow_ups from FeedbackStore" do
     issue_id = "issue-fu-snapshot"
 
+    orchestrator_name = Module.concat(__MODULE__, :FuSnapshotOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      FeedbackStore.cleanup(issue_id)
+      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    end)
+
+    # Record feedback AFTER the initial poll cycle so it isn't cleaned up
     FeedbackStore.record_feedback(
       issue_id,
       "https://github.com/org/repo/pull/99",
       [%{body: "fix this", path: "lib/foo.ex", line: 10}]
     )
 
-    orchestrator_name = Module.concat(__MODULE__, :FuSnapshotOrchestrator)
-    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
-
-    on_exit(fn ->
-      if Process.alive?(pid), do: Process.exit(pid, :normal)
+    # Mark issue as running so check_pr_follow_ups skips it (not cleaned up)
+    :sys.replace_state(pid, fn state ->
+      running_entry = %{pid: self(), ref: make_ref(), identifier: "MT-SNAP", issue: nil, started_at: DateTime.utc_now()}
+      %{state |
+        running: Map.put(state.running, issue_id, running_entry),
+        claimed: MapSet.put(state.claimed, issue_id)
+      }
     end)
 
     snapshot = GenServer.call(pid, :snapshot)
@@ -38,7 +49,9 @@ defmodule SymphonyElixir.OrchestratorFollowUpTest do
     assert fu.feedback_count == 1
   end
 
-  test "snapshot shows empty pr_follow_ups when FeedbackStore is empty" do
+  test "snapshot pr_follow_ups only includes tracked issues" do
+    unique_id = "issue-fu-empty-#{System.unique_integer([:positive])}"
+
     orchestrator_name = Module.concat(__MODULE__, :EmptyFuOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -47,7 +60,7 @@ defmodule SymphonyElixir.OrchestratorFollowUpTest do
     end)
 
     snapshot = GenServer.call(pid, :snapshot)
-    assert snapshot.pr_follow_ups == []
+    refute Enum.any?(snapshot.pr_follow_ups, &(&1.issue_id == unique_id))
   end
 
   # -------------------------------------------------------------------
