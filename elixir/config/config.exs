@@ -2,6 +2,8 @@ import Config
 
 config :phoenix, :json_library, Jason
 
+config :symphony_elixir, ecto_repos: [SymphonyElixir.Repo]
+
 config :symphony_elixir, SymphonyElixir.Repo,
   database: Path.expand("../symphony_dev.db", __DIR__),
   pool_size: 5
