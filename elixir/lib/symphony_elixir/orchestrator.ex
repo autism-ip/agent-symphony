@@ -394,7 +394,11 @@ defmodule SymphonyElixir.Orchestrator do
     case GitHub.poll_pr_status(repo, pr_number) do
       {:ok, %{status_check_rollup: rollup} = pr_info} ->
         Logger.info("PR status for issue_id=#{issue_id}: rollup=#{rollup}")
-        updated = %{entry | last_checked_at: DateTime.utc_now(), status_check_rollup: rollup, pr_info: pr_info}
+        updated =
+          entry
+          |> Map.put(:last_checked_at, DateTime.utc_now())
+          |> Map.put(:status_check_rollup, rollup)
+          |> Map.put(:pr_info, pr_info)
 
         case rollup do
           "SUCCESS" ->
