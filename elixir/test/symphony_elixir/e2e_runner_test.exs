@@ -76,9 +76,10 @@ defmodule SymphonyElixir.E2ERunnerTest do
       assert session.workspace == workspace
       assert session.issue_id == "LIN-E2E"
 
-      session = Map.put(session, :cmd_fn, fn _cmd, _args, _opts ->
-        {~s[{"result":"function hello() { return 'hello world'; }"}], 0}
-      end)
+      session =
+        Map.put(session, :cmd_fn, fn _cmd, _args, _opts ->
+          {~s[{"result":"function hello() { return 'hello world'; }"}], 0}
+        end)
 
       assert {:ok, output, session} = SymphonyElixir.Claude.Runner.run_turn(session, prompt, 30_000)
       assert is_binary(output)

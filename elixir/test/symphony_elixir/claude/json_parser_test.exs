@@ -10,8 +10,8 @@ defmodule SymphonyElixir.Claude.JsonParserTest do
     test "extracts result from NDJSON with type=result line" do
       ndjson =
         ~s({"type":"system","info":"starting"}\n) <>
-        ~s({"type":"assistant","message":{"content":[{"type":"text","text":"working..."}]}}\n) <>
-        ~s({"type":"result","result":"Implemented factorial in src/fact.ex","session_id":"sess_abc","total_cost_usd":0.01}\n)
+          ~s({"type":"assistant","message":{"content":[{"type":"text","text":"working..."}]}}\n) <>
+          ~s({"type":"result","result":"Implemented factorial in src/fact.ex","session_id":"sess_abc","total_cost_usd":0.01}\n)
 
       assert {:ok, %{status: :success, artifacts: [%{type: :text, content: content}]}} =
                JsonParser.parse(ndjson)
