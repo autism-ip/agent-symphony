@@ -53,24 +53,57 @@ defmodule SymphonyElixir.GitHub do
   """
   @spec deliver(Issue.t(), Path.t()) :: {:ok, delivery_result()} | {:error, delivery_error()}
   def deliver(%Issue{} = issue, workspace_path) when is_binary(workspace_path) do
-    with :ok <- verify_gh_available(),
-         :ok <- verify_has_changes(workspace_path),
-         {:ok, branch} <- create_branch(issue, workspace_path),
+    with :ok <- verify_gh_available() do
+      branch = branch_name(issue)
+      has_dirty = has_dirty_files?(workspace_path)
+      has_unpushed = has_unpushed_commits?(branch, workspace_path)
+
+      cond do
+        has_dirty ->
+          deliver_full_pipeline(issue, branch, workspace_path)
+
+        has_unpushed ->
+          deliver_push_and_pr(issue, branch, workspace_path)
+
+        true ->
+          {:error, :no_changes}
+      end
+    end
+  end
+
+  # Full pipeline: branch → commit → push → PR
+  defp deliver_full_pipeline(issue, branch, workspace_path) do
+    with {:ok, ^branch} <- create_branch(issue, workspace_path),
          :ok <- commit_changes(issue, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
-         :ok <- push_branch_if_needed(branch, workspace_path),
+         :ok <- push_branch(branch, workspace_path),
          {:ok, pr_number, pr_url} <- find_or_create_pr(issue, branch, workspace_path) do
-      result = %{
-        branch: branch,
-        commit_sha: commit_sha,
-        pr_number: pr_number,
-        pr_url: pr_url,
-        pr_title: pr_title(issue)
-      }
-
-      Logger.info("Delivery completed: #{issue.identifier} branch=#{branch} pr=#{pr_number} url=#{pr_url}")
-      {:ok, result}
+      {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
     end
+  end
+
+  # Recovery pipeline: push unpushed commits → PR (skips commit)
+  defp deliver_push_and_pr(issue, branch, workspace_path) do
+    with {:ok, ^branch} <- ensure_branch(branch, workspace_path),
+         :ok <- push_branch(branch, workspace_path),
+         {:ok, commit_sha} <- get_head_sha(workspace_path),
+         {:ok, pr_number, pr_url} <- find_or_create_pr(issue, branch, workspace_path) do
+      Logger.info("Recovered unpushed commits for #{issue.identifier} branch=#{branch}")
+      {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+    end
+  end
+
+  defp delivery_result(branch, commit_sha, pr_number, pr_url, issue) do
+    result = %{
+      branch: branch,
+      commit_sha: commit_sha,
+      pr_number: pr_number,
+      pr_url: pr_url,
+      pr_title: pr_title(issue)
+    }
+
+    Logger.info("Delivery completed: #{issue.identifier} branch=#{branch} pr=#{pr_number} url=#{pr_url}")
+    result
   end
 
   # -------------------------------------------------------------------
@@ -369,14 +402,6 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
-  @spec push_branch_if_needed(String.t(), Path.t()) :: :ok | {:error, delivery_error()}
-  defp push_branch_if_needed(branch, workspace_path) do
-    case has_unpushed_commits?(branch, workspace_path) do
-      true -> push_branch(branch, workspace_path)
-      false -> :ok
-    end
-  end
-
   @spec has_unpushed_commits?(String.t(), Path.t()) :: boolean()
   defp has_unpushed_commits?(branch, workspace_path) do
     case System.cmd("git", ["log", "--oneline", "origin/#{branch}..HEAD"],
@@ -385,7 +410,7 @@ defmodule SymphonyElixir.GitHub do
          ) do
       {"", 0} -> false
       {_output, 0} -> true
-      _ -> true
+      _ -> false
     end
   end
 
@@ -598,12 +623,11 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
-  @spec verify_has_changes(Path.t()) :: :ok | {:error, :no_changes}
-  defp verify_has_changes(workspace_path) do
+  @spec has_dirty_files?(Path.t()) :: boolean()
+  defp has_dirty_files?(workspace_path) do
     case System.cmd("git", ["status", "--porcelain"], cd: workspace_path, stderr_to_stdout: true) do
-      {"", 0} -> {:error, :no_changes}
-      {_output, 0} -> :ok
-      _ -> :ok
+      {"", 0} -> false
+      _ -> true
     end
   end
 
