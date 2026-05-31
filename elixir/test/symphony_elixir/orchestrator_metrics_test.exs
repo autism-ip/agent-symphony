@@ -79,7 +79,7 @@ defmodule SymphonyElixir.OrchestratorMetricsTest do
       state = struct!(Orchestrator.State, %{runner_totals: totals})
 
       assert Orchestrator.State.codex_totals(state) == totals,
-        "Expected codex_totals/1 accessor to read from runner_totals"
+             "Expected codex_totals/1 accessor to read from runner_totals"
     end
 
     test "State.codex_rate_limits/1 reads from runner_rate_limits" do
@@ -88,7 +88,7 @@ defmodule SymphonyElixir.OrchestratorMetricsTest do
       state = struct!(Orchestrator.State, %{runner_rate_limits: limits})
 
       assert Orchestrator.State.codex_rate_limits(state) == limits,
-        "Expected codex_rate_limits/1 accessor to read from runner_rate_limits"
+             "Expected codex_rate_limits/1 accessor to read from runner_rate_limits"
     end
   end
 end

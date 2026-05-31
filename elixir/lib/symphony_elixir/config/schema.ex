@@ -462,9 +462,7 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp validate_runner_type(%{runner: _runner}, true, true) do
-    {:error,
-     {:invalid_workflow_config,
-      "runner.type must be one of: #{Enum.join(@runner_valid_types, ", ")}"}}
+    {:error, {:invalid_workflow_config, "runner.type must be one of: #{Enum.join(@runner_valid_types, ", ")}"}}
   end
 
   defp validate_runner_type(_settings, _has_runner_key, _has_runner_type), do: :ok

@@ -556,10 +556,10 @@ defmodule SymphonyElixir.GitHub do
       checks == [] ->
         "PENDING"
 
-      Enum.all?(checks, &(check_completed_and_successful?(&1))) ->
+      Enum.all?(checks, &check_completed_and_successful?(&1)) ->
         "SUCCESS"
 
-      Enum.any?(checks, &(check_failed?(&1))) ->
+      Enum.any?(checks, &check_failed?(&1)) ->
         "FAILURE"
 
       true ->

@@ -277,12 +277,17 @@ defmodule SymphonyElixir.AgentRunner do
         :ok
 
       pid ->
-        send(pid, {:delivery_complete, issue_id, %{
-          identifier: identifier,
-          pr_url: delivery.pr_url,
-          pr_number: delivery.pr_number,
-          branch: delivery.branch
-        }})
+        send(
+          pid,
+          {:delivery_complete, issue_id,
+           %{
+             identifier: identifier,
+             pr_url: delivery.pr_url,
+             pr_number: delivery.pr_number,
+             branch: delivery.branch
+           }}
+        )
+
         :ok
     end
   end
