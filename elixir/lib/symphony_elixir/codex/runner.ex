@@ -23,7 +23,11 @@ defmodule SymphonyElixir.Codex.Runner do
 
   @impl true
   def start_session(issue, workspace, worker_host) do
-    Logger.info("Codex.Runner starting session issue_id=#{issue.id} workspace=#{workspace} worker_host=#{worker_host || "local"}")
+    Logger.info("Codex.Runner starting session",
+      issue_id: issue.id,
+      workspace: workspace,
+      worker_host: worker_host
+    )
 
     case AppServer.start_session(workspace, worker_host: worker_host) do
       {:ok, session} -> {:ok, Map.put(session, :issue, issue)}
@@ -51,7 +55,10 @@ defmodule SymphonyElixir.Codex.Runner do
   # Private helpers
   # ------------------------------------------------------------------
 
-  # AppServer emits assistant text through callbacks; successful turns only
-  # report control state here, so artifact persistence should skip gracefully.
-  defp extract_text(_raw), do: ""
+  # AppServer.run_turn returns {:ok, :turn_completed} on success.
+  # The actual assistant text is emitted via on_message callbacks,
+  # not returned from run_turn. Return empty string for non-binary
+  # values so persist_artifacts can skip gracefully.
+  defp extract_text(raw) when is_binary(raw), do: raw
+  defp extract_text(_non_binary), do: ""
 end

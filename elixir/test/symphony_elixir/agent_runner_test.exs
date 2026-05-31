@@ -34,49 +34,40 @@ defmodule SymphonyElixir.AgentRunnerTest do
   describe "AgentRunner source code uses Runner.adapter()" do
     test "AgentRunner does not alias or call Codex.AppServer" do
       source = File.read!("lib/symphony_elixir/agent_runner.ex")
-
       refute source =~ "alias SymphonyElixir.Codex.AppServer",
-             "AgentRunner should not alias Codex.AppServer after refactor"
-
+        "AgentRunner should not alias Codex.AppServer after refactor"
       refute source =~ "AppServer.start_session",
-             "AgentRunner should not call AppServer.start_session directly"
-
+        "AgentRunner should not call AppServer.start_session directly"
       refute source =~ "AppServer.run_turn",
-             "AgentRunner should not call AppServer.run_turn directly"
-
+        "AgentRunner should not call AppServer.run_turn directly"
       refute source =~ "AppServer.stop_session",
-             "AgentRunner should not call AppServer.stop_session directly"
+        "AgentRunner should not call AppServer.stop_session directly"
     end
 
     test "AgentRunner aliases and uses Runner.adapter()" do
       source = File.read!("lib/symphony_elixir/agent_runner.ex")
-
       assert source =~ "Runner",
-             "AgentRunner should reference Runner module"
-
+        "AgentRunner should reference Runner module"
       assert source =~ "Runner.adapter()",
-             "AgentRunner should call Runner.adapter() for dynamic dispatch"
+        "AgentRunner should call Runner.adapter() for dynamic dispatch"
     end
 
     test "AgentRunner calls runner.start_session with issue, workspace, worker_host" do
       source = File.read!("lib/symphony_elixir/agent_runner.ex")
-
       assert source =~ "runner.start_session(issue",
-             "AgentRunner should call runner.start_session(issue, ...)"
+        "AgentRunner should call runner.start_session(issue, ...)"
     end
 
     test "AgentRunner calls runner.run_turn with session, prompt, timeout_ms" do
       source = File.read!("lib/symphony_elixir/agent_runner.ex")
-
       assert source =~ "runner.run_turn(session",
-             "AgentRunner should call runner.run_turn(session, ...)"
+        "AgentRunner should call runner.run_turn(session, ...)"
     end
 
     test "AgentRunner calls runner.stop_session in after block" do
       source = File.read!("lib/symphony_elixir/agent_runner.ex")
-
       assert source =~ "runner.stop_session(session)",
-             "AgentRunner should call runner.stop_session(session) in after block"
+        "AgentRunner should call runner.stop_session(session) in after block"
     end
   end
 
