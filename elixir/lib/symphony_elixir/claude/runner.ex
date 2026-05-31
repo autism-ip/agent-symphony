@@ -35,7 +35,7 @@ defmodule SymphonyElixir.Claude.Runner do
 
   @behaviour SymphonyElixir.Runner
 
-  alias SymphonyElixir.{Claude.JsonParser, Config}
+  alias SymphonyElixir.{Claude.JsonParser, Config, SSH}
 
   require Logger
 
@@ -59,6 +59,7 @@ defmodule SymphonyElixir.Claude.Runner do
       issue_title: issue.title,
       command: settings.command,
       worker_host: worker_host,
+      max_turns: settings.max_turns,
       session_id: nil,
       cmd_fn: &System.cmd/3
     }
@@ -70,28 +71,45 @@ defmodule SymphonyElixir.Claude.Runner do
   def run_turn(session, prompt, timeout_ms) do
     {command, args} = command_and_args(session, prompt)
 
-    opts = [
-      cd: session.workspace,
-      stderr_to_stdout: true,
-      env: [
-        {"CLAUDECODE", nil},
-        {"CLAUDE_CODE_ENTRYPOINT", nil},
-        {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"}
-      ]
-    ]
+    # SSH commands handle cd internally; local commands need cd: option.
+    opts =
+      case session.worker_host do
+        host when is_binary(host) and host != "" ->
+          [stderr_to_stdout: true]
+
+        _ ->
+          [
+            cd: session.workspace,
+            stderr_to_stdout: true,
+            env: [
+              {"CLAUDECODE", nil},
+              {"CLAUDE_CODE_ENTRYPOINT", nil},
+              {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"}
+            ]
+          ]
+      end
 
     task =
       Task.async(fn ->
-        session.cmd_fn.(command, args, opts)
+        try do
+          {:ok, session.cmd_fn.(command, args, opts)}
+        rescue
+          e -> {:cmd_crash, e}
+        catch
+          kind, reason -> {:cmd_crash, {kind, reason}}
+        end
       end)
 
     case Task.yield(task, timeout_ms) || Task.shutdown(task) do
-      {:ok, {output, 0}} ->
+      {:ok, {:ok, {output, 0}}} ->
         session_id = extract_session_id(output)
         {:ok, output, %{session | session_id: session_id}}
 
-      {:ok, {output, exit_code}} ->
+      {:ok, {:ok, {output, exit_code}}} ->
         {:error, {:claude_exit, exit_code, output}}
+
+      {:ok, {:cmd_crash, reason}} ->
+        {:error, {:cmd_crash, reason}}
 
       nil ->
         {:error, {:runner_timeout, :turn, timeout_ms}}
@@ -109,10 +127,26 @@ defmodule SymphonyElixir.Claude.Runner do
   # ------------------------------------------------------------------
 
   defp command_and_args(session, prompt) do
-    {
-      "/bin/sh",
-      ["-c", "exec \"$0\" \"$@\" </dev/null", session.command | turn_args(session, prompt)]
-    }
+    cli_args = turn_args(session, prompt)
+    local_cmd = build_local_command(session.command, cli_args)
+
+    case session.worker_host do
+      host when is_binary(host) and host != "" ->
+        remote_script = "cd #{shell_escape(session.workspace)} && #{local_cmd}"
+        ssh_cmd = SSH.remote_shell_command(remote_script)
+        {"ssh", [host, ssh_cmd]}
+
+      _ ->
+        {"/bin/sh", ["-c", "exec \"$0\" \"$@\" </dev/null", session.command | cli_args]}
+    end
+  end
+
+  defp build_local_command(command, args) do
+    Enum.join([command | Enum.map(args, &shell_escape/1)], " ")
+  end
+
+  defp shell_escape(value) when is_binary(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
   defp turn_args(session, prompt) do
@@ -123,6 +157,8 @@ defmodule SymphonyElixir.Claude.Runner do
       "--verbose",
       "--output-format",
       "stream-json",
+      "--max-turns",
+      Integer.to_string(session.max_turns),
       "--settings",
       Jason.encode!(%{"disableAllHooks" => true})
     ]

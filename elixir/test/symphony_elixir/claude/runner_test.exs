@@ -92,6 +92,8 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
+        max_turns: 10,
         session_id: nil,
         cmd_fn: fn command, args, opts ->
           assert command == "/bin/sh"
@@ -102,9 +104,9 @@ defmodule SymphonyElixir.Claude.RunnerTest do
           assert "--verbose" in claude_args
           assert "--output-format" in claude_args
           assert "stream-json" in claude_args
+          assert "--max-turns" in claude_args
           assert "--settings" in claude_args
           assert %{"disableAllHooks" => true} = decode_settings_arg(claude_args)
-          refute "--max-turns" in claude_args
           refute "--resume" in claude_args
           assert Keyword.get(opts, :cd) == "/tmp/ws"
           assert {"CLAUDECODE", nil} in Keyword.fetch!(opts, :env)
@@ -128,6 +130,8 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
+        max_turns: 10,
         session_id: "sess_abc",
         cmd_fn: fn _command, args, _opts ->
           assert ["-c", "exec \"$0\" \"$@\" </dev/null", "claude" | claude_args] = args
@@ -148,6 +152,8 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
+        max_turns: 10,
         session_id: nil,
         cmd_fn: fn _cmd, _args, _opts -> {"Error: rate limited", 1} end
       }
@@ -162,6 +168,8 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
+        max_turns: 10,
         session_id: nil,
         cmd_fn: fn _cmd, _args, _opts ->
           Process.sleep(:infinity)
@@ -178,6 +186,8 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
+        max_turns: 10,
         session_id: nil,
         cmd_fn: fn _cmd, _args, _opts ->
           {"{\"type\":\"system\",\"info\":\"starting\"}\n", 0}
