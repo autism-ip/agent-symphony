@@ -26,6 +26,8 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    @type t :: %__MODULE__{}
+
     @defaults [
       running: %{},
       completed: MapSet.new(),
@@ -48,9 +50,11 @@ defmodule SymphonyElixir.Orchestrator do
     ]
 
     @doc "Backward-compat accessor: reads from runner_totals."
+    @spec codex_totals(t()) :: map() | nil
     def codex_totals(%{runner_totals: val}), do: val
 
     @doc "Backward-compat accessor: reads from runner_rate_limits."
+    @spec codex_rate_limits(t()) :: map() | nil
     def codex_rate_limits(%{runner_rate_limits: val}), do: val
   end
 
