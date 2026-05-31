@@ -84,7 +84,9 @@ defmodule SymphonyElixir.Comments.GitHubComment do
     url = "https://api.github.com/repos/#{owner}/#{repo}/issues/#{pr_number}/comments"
 
     case github_request(:post, url, %{body: body}) do
-      {:ok, _response} -> :ok
+      {:ok, _response} ->
+        :ok
+
       {:error, reason} ->
         Logger.error("Failed to post GitHub comment: #{inspect(reason)}")
         {:error, reason}
