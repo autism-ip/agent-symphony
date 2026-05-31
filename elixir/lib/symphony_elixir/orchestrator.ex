@@ -7,11 +7,12 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, FeedbackStore, GitHub, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @max_follow_up_attempts 3
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -38,6 +39,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       blocked: %{},
       retry_attempts: %{},
+      pr_follow_ups: %{},
       codex_totals: nil,
       codex_rate_limits: nil
     ]
@@ -201,16 +203,33 @@ defmodule SymphonyElixir.Orchestrator do
     if input_required_blocker?(running_entry) do
       block_input_required_agent_down(state, issue_id, running_entry, session_id, :normal)
     else
-      Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+      case FeedbackStore.get_follow_up(issue_id) do
+        %{attempt: attempt} = _follow_up when attempt >= @max_follow_up_attempts ->
+          Logger.warning("PR follow-up attempts exhausted for issue_id=#{issue_id} attempt=#{attempt}/#{@max_follow_up_attempts}; blocking as Needs Human")
+          FeedbackStore.cleanup(issue_id)
 
-      state
-      |> complete_issue(issue_id)
-      |> schedule_issue_retry(issue_id, 1, %{
-        identifier: running_entry.identifier,
-        delay_type: :continuation,
-        worker_host: Map.get(running_entry, :worker_host),
-        workspace_path: Map.get(running_entry, :workspace_path)
-      })
+          state
+          |> block_issue_from_entry(issue_id, running_entry, "PR follow-up attempts exhausted (#{attempt}/#{@max_follow_up_attempts}); needs human intervention")
+          |> mark_blocked_follow_up_exhausted(issue_id)
+
+        %{attempt: _attempt} ->
+          Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PR follow-up pending, scheduling follow-up dispatch")
+          state = complete_issue(state, issue_id)
+
+          schedule_follow_up_dispatch(state, issue_id, running_entry)
+
+        nil ->
+          Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+
+          state
+          |> complete_issue(issue_id)
+          |> schedule_issue_retry(issue_id, 1, %{
+               identifier: running_entry.identifier,
+               delay_type: :continuation,
+               worker_host: Map.get(running_entry, :worker_host),
+               workspace_path: Map.get(running_entry, :workspace_path)
+             })
+      end
     end
   end
 
@@ -248,6 +267,7 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
+      |> check_pr_follow_ups()
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -450,6 +470,165 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp reconcile_blocked_issue_state(_issue, state, _active_states, _terminal_states), do: state
 
+  # -------------------------------------------------------------------
+  # PR follow-up loop
+  # -------------------------------------------------------------------
+
+  @doc false
+  @spec check_pr_follow_ups_for_test(term()) :: term()
+  def check_pr_follow_ups_for_test(%State{} = state), do: check_pr_follow_ups(state)
+
+  defp check_pr_follow_ups(%State{} = state) do
+    follow_ups = try do
+      FeedbackStore.list_follow_ups()
+    catch
+      :exit, _ -> %{}
+    end
+
+    Enum.reduce(follow_ups, state, fn {issue_id, follow_up}, state_acc ->
+      process_follow_up(state_acc, issue_id, follow_up)
+    end)
+  end
+
+  defp process_follow_up(%State{} = state, issue_id, follow_up) do
+    cond do
+      Map.has_key?(state.running, issue_id) ->
+        state
+
+      Map.has_key?(state.blocked, issue_id) ->
+        state
+
+      !MapSet.member?(state.claimed, issue_id) ->
+        Logger.info("PR follow-up issue_id=#{issue_id} no longer claimed; cleaning up")
+        FeedbackStore.cleanup(issue_id)
+        state
+
+      true ->
+        check_follow_up_pr(state, issue_id, follow_up)
+    end
+  end
+
+  defp check_follow_up_pr(%State{} = state, issue_id, follow_up) do
+    case GitHub.parse_pr_url(follow_up.pr_url) do
+      {:ok, {repo, pr_number}} ->
+        check_follow_up_comments(state, issue_id, follow_up, repo, pr_number)
+
+      :error ->
+        Logger.warning("Invalid PR URL for follow-up issue_id=#{issue_id}: #{follow_up.pr_url}")
+        FeedbackStore.cleanup(issue_id)
+        state
+    end
+  end
+
+  defp check_follow_up_comments(%State{} = state, issue_id, follow_up, repo, pr_number) do
+    case GitHub.fetch_pr_comments(repo, pr_number) do
+      {:ok, comments} when comments != [] ->
+        handle_follow_up_with_comments(state, issue_id, follow_up, comments)
+
+      {:ok, []} ->
+        Logger.info("PR follow-up: no unresolved comments for issue_id=#{issue_id}; cleaning up")
+        FeedbackStore.cleanup(issue_id)
+        schedule_issue_retry(state, issue_id, 1, %{
+          delay_type: :continuation,
+          identifier: follow_up.pr_url
+        })
+
+      {:error, reason} ->
+        Logger.warning("Failed to check PR comments for follow-up issue_id=#{issue_id}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp handle_follow_up_with_comments(%State{} = state, issue_id, _follow_up, comments) do
+    case FeedbackStore.record_attempt(issue_id) do
+      {:ok, updated} ->
+        Logger.info("PR follow-up: #{length(comments)} unresolved comments for issue_id=#{issue_id}; scheduling attempt #{updated.attempt}/#{FeedbackStore.max_attempts()}")
+        dispatch_follow_up(state, issue_id, updated)
+
+      {:error, :attempts_exhausted} ->
+        Logger.warning("PR follow-up attempts exhausted for issue_id=#{issue_id}; blocking as Needs Human")
+        FeedbackStore.cleanup(issue_id)
+        mark_follow_up_exhausted(state, issue_id)
+
+      {:error, :no_follow_up} ->
+        Logger.warning("PR follow-up: no follow-up state for issue_id=#{issue_id} during attempt recording")
+        state
+    end
+  end
+
+  defp dispatch_follow_up(%State{} = state, issue_id, follow_up) do
+    case Map.get(state.claimed, issue_id) do
+      true ->
+        issue = fetch_issue_for_follow_up(issue_id)
+
+        case issue do
+          %Issue{} = valid_issue ->
+            dispatch_issue(state, valid_issue, {:follow_up, follow_up.attempt})
+
+          nil ->
+            Logger.warning("PR follow-up: could not fetch issue_id=#{issue_id} for dispatch")
+            state
+        end
+
+      _ ->
+        Logger.info("PR follow-up: issue_id=#{issue_id} not claimed; skipping dispatch")
+        state
+    end
+  end
+
+  defp fetch_issue_for_follow_up(issue_id) do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [%Issue{} = issue | _]} -> issue
+      _ -> nil
+    end
+  end
+
+  defp mark_follow_up_exhausted(%State{} = state, issue_id) do
+    case Map.get(state.blocked, issue_id) do
+      nil ->
+        blocked_entry = %{
+          issue_id: issue_id,
+          identifier: issue_id,
+          error: "PR follow-up attempts exhausted; needs human intervention",
+          blocked_at: DateTime.utc_now(),
+          last_codex_event: :follow_up_exhausted
+        }
+
+        %{
+          state
+          | blocked: Map.put(state.blocked, issue_id, blocked_entry),
+            claimed: MapSet.put(state.claimed, issue_id)
+        }
+
+      _existing ->
+        state
+    end
+  end
+
+  defp mark_blocked_follow_up_exhausted(%State{} = state, issue_id) do
+    case Map.get(state.blocked, issue_id) do
+      %{} = blocked_entry ->
+        updated_entry = Map.put(blocked_entry, :last_codex_event, :follow_up_exhausted)
+        %{state | blocked: Map.put(state.blocked, issue_id, updated_entry)}
+
+      nil ->
+        state
+    end
+  end
+
+  defp schedule_follow_up_dispatch(%State{} = state, issue_id, running_entry) do
+    schedule_issue_retry(state, issue_id, 1, %{
+      identifier: running_entry.identifier,
+      delay_type: :follow_up,
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path)
+    })
+  end
+
+  # -------------------------------------------------------------------
+  # End PR follow-up loop
+  # -------------------------------------------------------------------
+
   defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
        when is_list(requested_issue_ids) and is_list(issues) do
     visible_issue_ids =
@@ -541,12 +720,19 @@ defmodule SymphonyElixir.Orchestrator do
 
         stop_running_task(pid, ref)
 
+        try do
+          FeedbackStore.cleanup(issue_id)
+        catch
+          :exit, _ -> :ok
+        end
+
         %{
           state
           | running: Map.delete(state.running, issue_id),
             claimed: MapSet.delete(state.claimed, issue_id),
             blocked: Map.delete(state.blocked, issue_id),
-            retry_attempts: Map.delete(state.retry_attempts, issue_id)
+            retry_attempts: Map.delete(state.retry_attempts, issue_id),
+            pr_follow_ups: Map.delete(state.pr_follow_ups, issue_id)
         }
 
       _ ->
@@ -1161,16 +1347,23 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, issue_id) do
+    try do
+      FeedbackStore.cleanup(issue_id)
+    catch
+      :exit, _ -> :ok
+    end
+
     %{
       state
       | claimed: MapSet.delete(state.claimed, issue_id),
         blocked: Map.delete(state.blocked, issue_id),
-        retry_attempts: Map.delete(state.retry_attempts, issue_id)
+        retry_attempts: Map.delete(state.retry_attempts, issue_id),
+        pr_follow_ups: Map.delete(state.pr_follow_ups, issue_id)
     }
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
+    if metadata[:delay_type] in [:continuation, :follow_up] and attempt == 1 do
       @continuation_retry_delay_ms
     else
       failure_retry_delay(attempt)
@@ -1402,11 +1595,29 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
+    follow_ups =
+      try do
+        FeedbackStore.list_follow_ups()
+      catch
+        :exit, _ -> %{}
+      end
+      |> Enum.map(fn {issue_id, fu} ->
+        %{
+          issue_id: issue_id,
+          pr_url: fu.pr_url,
+          attempt: fu.attempt,
+          max_attempts: FeedbackStore.max_attempts(),
+          feedback_count: length(fu.feedback_items || []),
+          last_checked_at: fu.last_checked_at
+        }
+      end)
+
     {:reply,
      %{
        running: running,
        retrying: retrying,
        blocked: blocked,
+       pr_follow_ups: follow_ups,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{

@@ -317,7 +317,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             pr_follow_ups: Map.get(snapshot, :pr_follow_ups, [])
            }},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
@@ -334,6 +335,7 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
+        follow_ups = Map.get(snapshot, :pr_follow_ups, [])
         project_link_lines = format_project_link_lines()
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
@@ -346,6 +348,8 @@ defmodule SymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        follow_up_rows = format_follow_up_rows(follow_ups)
+        backoff_to_follow_up_spacer = if(retrying == [], do: [], else: ["│"])
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -374,6 +378,9 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           backoff_to_follow_up_spacer ++
+           [colorize("├─ PR Follow-ups", @ansi_bold), "│"] ++
+           follow_up_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -562,7 +569,8 @@ defmodule SymphonyElixir.StatusDashboard do
              retrying: retrying,
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
+             polling: Map.get(snapshot, :polling),
+             pr_follow_ups: Map.get(snapshot, :pr_follow_ups, [])
            }}
 
         _ ->
@@ -700,6 +708,32 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_error(_), do: ""
+
+  defp format_follow_up_rows(follow_ups) do
+    if follow_ups == [] do
+      ["│  " <> colorize("No active follow-ups", @ansi_gray)]
+    else
+      follow_ups
+      |> Enum.sort_by(& &1.issue_id)
+      |> Enum.map(&format_follow_up_summary/1)
+    end
+  end
+
+  defp format_follow_up_summary(fu) do
+    identifier = fu.issue_id || "unknown"
+    attempt = fu.attempt || 0
+    max = fu.max_attempts || 3
+    feedback_count = fu.feedback_count || 0
+    pr_link = if fu.pr_url && fu.pr_url != "", do: " #{colorize(fu.pr_url, @ansi_dim)}", else: ""
+
+    "│  #{colorize("PR", @ansi_magenta)} " <>
+      colorize("#{identifier}", @ansi_cyan) <>
+      " " <>
+      colorize("attempt=#{attempt}/#{max}", @ansi_yellow) <>
+      " " <>
+      colorize("#{feedback_count} comments", @ansi_orange) <>
+      pr_link
+  end
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)

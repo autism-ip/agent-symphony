@@ -15,4 +15,7 @@
 \e[1m├─ Backoff queue\e[0m
 │
 │  \e[90mNo queued retries\e[0m
+\e[1m├─ PR Follow-ups\e[0m
+│
+│  \e[90mNo active follow-ups\e[0m
 ╰─

@@ -17,5 +17,8 @@
 ├─ Backoff queue
 │
 │  No queued retries
+├─ PR Follow-ups
+│
+│  No active follow-ups
 ╰─
 ```
