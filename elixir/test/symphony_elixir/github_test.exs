@@ -223,6 +223,31 @@ defmodule SymphonyElixir.GitHubTest do
   end
 
   # -------------------------------------------------------------------
+  # deliver/3 — SSH routing
+  # -------------------------------------------------------------------
+
+  describe "deliver/3 with worker_host" do
+    test "skips local gh check when worker_host is set" do
+      workspace = setup_git_repo()
+      issue = %Issue{id: "abc", identifier: "ZEN-19", title: "Test"}
+
+      # With worker_host, verify_prerequisites skips local gh check.
+      # 127.0.0.1:1 (port 1) fails immediately with connection refused.
+      result = GitHub.deliver(issue, workspace, worker_host: "127.0.0.1:1")
+      assert {:error, _reason} = result
+      refute result == {:error, :gh_not_available}
+    end
+
+    test "routes dirty workspace through SSH pipeline" do
+      workspace = setup_git_repo_with_changes()
+      issue = %Issue{id: "abc", identifier: "ZEN-19", title: "Test"}
+
+      # Dirty workspace triggers deliver_full_pipeline via SSH.
+      assert {:error, _reason} = GitHub.deliver(issue, workspace, worker_host: "127.0.0.1:1")
+    end
+  end
+
+  # -------------------------------------------------------------------
   # Helpers
   # -------------------------------------------------------------------
 
