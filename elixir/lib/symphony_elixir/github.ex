@@ -58,8 +58,8 @@ defmodule SymphonyElixir.GitHub do
          {:ok, branch} <- create_branch(issue, workspace_path),
          :ok <- commit_changes(issue, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
-         :ok <- push_branch(branch, workspace_path),
-         {:ok, pr_number, pr_url} <- create_draft_pr(issue, branch, workspace_path) do
+         :ok <- push_branch_if_needed(branch, workspace_path),
+         {:ok, pr_number, pr_url} <- find_or_create_pr(issue, branch, workspace_path) do
       result = %{
         branch: branch,
         commit_sha: commit_sha,
@@ -365,9 +365,76 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
+  @spec push_branch_if_needed(String.t(), Path.t()) :: :ok | {:error, delivery_error()}
+  defp push_branch_if_needed(branch, workspace_path) do
+    case has_unpushed_commits?(branch, workspace_path) do
+      true -> push_branch(branch, workspace_path)
+      false -> :ok
+    end
+  end
+
+  @spec has_unpushed_commits?(String.t(), Path.t()) :: boolean()
+  defp has_unpushed_commits?(branch, workspace_path) do
+    case System.cmd("git", ["log", "--oneline", "origin/#{branch}..HEAD"],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {"", 0} -> false
+      {_output, 0} -> true
+      _ -> true
+    end
+  end
+
   # -------------------------------------------------------------------
   # GitHub PR operations (gh CLI)
   # -------------------------------------------------------------------
+
+  @spec find_or_create_pr(Issue.t(), String.t(), Path.t()) ::
+          {:ok, integer(), String.t()} | {:error, delivery_error()}
+  defp find_or_create_pr(%Issue{} = issue, branch, workspace_path) do
+    case detect_existing_pr(branch, workspace_path) do
+      {:ok, pr_number, pr_url} ->
+        Logger.info("Reusing existing PR ##{pr_number} for #{issue.identifier}: #{pr_url}")
+        {:ok, pr_number, pr_url}
+
+      :no_pr ->
+        create_draft_pr(issue, branch, workspace_path)
+    end
+  end
+
+  @spec detect_existing_pr(String.t(), Path.t()) ::
+          {:ok, integer(), String.t()} | :no_pr
+  defp detect_existing_pr(branch, workspace_path) do
+    case System.cmd(
+           "gh",
+           [
+             "pr",
+             "list",
+             "--head",
+             branch,
+             "--state",
+             "open",
+             "--json",
+             "number,url",
+             "--limit",
+             "1"
+           ],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        case Jason.decode(String.trim(output)) do
+          {:ok, [%{"number" => number, "url" => url} | _]} ->
+            {:ok, number, url}
+
+          _ ->
+            :no_pr
+        end
+
+      _ ->
+        :no_pr
+    end
+  end
 
   @spec create_draft_pr(Issue.t(), String.t(), Path.t()) ::
           {:ok, integer(), String.t()} | {:error, delivery_error()}

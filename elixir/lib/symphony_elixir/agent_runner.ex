@@ -32,13 +32,19 @@ defmodule SymphonyElixir.AgentRunner do
       {:ok, workspace} ->
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
-        try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
-               :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
-            attempt_delivery(issue, workspace)
+        run_result =
+          try do
+            with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
+                 :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+              :ok
+            end
+          after
+            Workspace.run_after_run_hook(workspace, issue, worker_host)
           end
-        after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+
+        case run_result do
+          :ok -> attempt_delivery(issue, workspace, worker_host)
+          error -> error
         end
 
       {:error, reason} ->
@@ -248,7 +254,7 @@ defmodule SymphonyElixir.AgentRunner do
   # GitHub delivery (best-effort, post-run)
   # ------------------------------------------------------------------
 
-  defp attempt_delivery(%Issue{} = issue, workspace) do
+  defp attempt_delivery(%Issue{} = issue, workspace, _worker_host) do
     case GitHub.deliver(issue, workspace) do
       {:ok, delivery} ->
         Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")
