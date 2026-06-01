@@ -212,6 +212,7 @@ defmodule SymphonyElixir.GitHub do
     #### Test Plan
 
     - [ ] `make -C elixir all`
+    - [ ] CI gate passes (validate-pr-description)
     """
   end
 

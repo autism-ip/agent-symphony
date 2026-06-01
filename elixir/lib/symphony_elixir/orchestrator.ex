@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, GitHub, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Comments, Config, GitHub, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -210,6 +210,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info({:delivery_complete, issue_id, delivery_info}, %{pr_tracking: pr_tracking} = state)
       when is_binary(issue_id) and is_map(delivery_info) do
     Logger.info("Tracking delivery for issue_id=#{issue_id} pr_url=#{delivery_info.pr_url}")
+    post_delivery_comment(issue_id, delivery_info)
     entry = Map.put(delivery_info, :last_checked_at, DateTime.utc_now())
     {:noreply, %{state | pr_tracking: Map.put(pr_tracking, issue_id, entry)}}
   end
@@ -1216,6 +1217,26 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # Delivery comment (best-effort)
+  # ------------------------------------------------------------------
+
+  defp post_delivery_comment(issue_id, delivery_info) do
+    run_info =
+      Comments.build_run_info(%{
+        issue_identifier: delivery_info.identifier,
+        pr_url: delivery_info.pr_url
+      })
+
+    case Comments.post_linear_comment(issue_id, run_info) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Delivery comment failed for issue_id=#{issue_id}: #{inspect(reason)}")
     end
   end
 

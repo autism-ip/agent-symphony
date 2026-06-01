@@ -637,23 +637,10 @@ defmodule SymphonyElixir.Config.Schema do
         top_value = Map.get(settings.codex, field)
         if runner_value != default_codex_value(field), do: runner_value, else: top_value
 
-      %{type: "claude", claude: runner_claude} ->
-        runner_value = Map.get(runner_claude, field)
-        default = default_claude_value(field)
-
-        cond do
-          runner_value != nil and runner_value != default ->
-            # User explicitly set a non-default value in runner.claude
-            runner_value
-
-          runner_value != nil ->
-            # User set a value that happens to equal the Claude default — honor it
-            runner_value
-
-          true ->
-            # Field not set in runner.claude — fall back to top-level codex
-            Map.get(settings.codex, field)
-        end
+      %{type: "claude"} ->
+        # Claude runner reads its own settings from settings.runner.claude directly.
+        # codex_fallback always returns Codex config for Codex-only callers.
+        Map.get(settings.codex, field)
 
       _ ->
         Map.get(settings.codex, field)
@@ -668,13 +655,6 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_codex_value(:thread_sandbox), do: "workspace-write"
   defp default_codex_value(:approval_policy), do: %{"reject" => %{"sandbox_approval" => true, "rules" => true, "mcp_elicitations" => true}}
   defp default_codex_value(:turn_sandbox_policy), do: nil
-
-  # Must match Claude embedded_schema defaults exactly.
-  defp default_claude_value(:command), do: "claude"
-  defp default_claude_value(:turn_timeout_ms), do: 300_000
-  defp default_claude_value(:stall_timeout_ms), do: 60_000
-  defp default_claude_value(:max_turns), do: 10
-  defp default_claude_value(_), do: nil
 
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace

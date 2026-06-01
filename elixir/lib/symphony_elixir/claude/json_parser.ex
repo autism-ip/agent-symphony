@@ -90,6 +90,13 @@ defmodule SymphonyElixir.Claude.JsonParser do
       %{"is_error" => true, "result" => content} when is_binary(content) ->
         {:ok, %{status: :error, artifacts: [%{type: :text, content: content}]}}
 
+      %{"subtype" => subtype, "result" => content}
+      when subtype in ["error_max_turns", "error_during_execution"] and is_binary(content) ->
+        {:ok, %{status: :error, subtype: subtype, artifacts: [%{type: :text, content: content}]}}
+
+      %{"subtype" => subtype, "result" => content} when is_binary(content) ->
+        {:ok, %{status: :success, subtype: subtype, artifacts: [%{type: :text, content: content}]}}
+
       %{"result" => content} when is_binary(content) ->
         {:ok, %{status: :success, artifacts: [%{type: :text, content: content}]}}
 
