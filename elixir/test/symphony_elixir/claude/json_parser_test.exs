@@ -29,6 +29,26 @@ defmodule SymphonyElixir.Claude.JsonParserTest do
       assert content == "Rate limit exceeded"
     end
 
+    test "extracts error result when subtype is error_max_turns" do
+      ndjson =
+        ~s({"type":"result","result":"Max turns reached","subtype":"error_max_turns","session_id":"sess_mt"}\n)
+
+      assert {:ok, %{status: :error, artifacts: [%{type: :text, content: content}]}} =
+               JsonParser.parse(ndjson)
+
+      assert content == "Max turns reached"
+    end
+
+    test "extracts error result when subtype is error_during_execution" do
+      ndjson =
+        ~s({"type":"result","result":"Runtime failure","subtype":"error_during_execution","session_id":"sess_rt"}\n)
+
+      assert {:ok, %{status: :error, artifacts: [%{type: :text, content: content}]}} =
+               JsonParser.parse(ndjson)
+
+      assert content == "Runtime failure"
+    end
+
     test "falls back to assistant text when no result line" do
       ndjson =
         ~s({"type":"assistant","message":{"content":[{"type":"text","text":"partial output"}]}}\n)

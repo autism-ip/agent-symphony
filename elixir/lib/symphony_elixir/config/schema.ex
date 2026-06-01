@@ -660,6 +660,24 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  # Runner-aware stall timeout: returns the value from the active runner config
+  # without cross-falling back to the other runner type's top-level settings.
+  # Claude's 60s default must not be overridden by Codex's 300s.
+  @doc false
+  @spec stall_timeout_ms(t()) :: non_neg_integer()
+  def stall_timeout_ms(settings) do
+    case settings.runner do
+      %{type: "claude", claude: claude} ->
+        claude.stall_timeout_ms
+
+      %{type: "codex", codex: codex} ->
+        codex.stall_timeout_ms
+
+      _ ->
+        settings.codex.stall_timeout_ms
+    end
+  end
+
   # Must match Codex embedded_schema defaults exactly.
   defp default_codex_value(:command), do: "codex app-server"
   defp default_codex_value(:turn_timeout_ms), do: 3_600_000
