@@ -137,7 +137,7 @@ defmodule SymphonyElixir.Claude.Runner do
         {"ssh", [host, ssh_cmd]}
 
       _ ->
-        {"/bin/sh", ["-c", "exec \"$0\" \"$@\" </dev/null", session.command | cli_args]}
+        {"/bin/sh", ["-c", "exec \"$@\" </dev/null", "--" | [session.command | cli_args]]}
     end
   end
 
