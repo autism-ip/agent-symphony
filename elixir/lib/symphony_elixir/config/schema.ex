@@ -685,7 +685,7 @@ defmodule SymphonyElixir.Config.Schema do
   # Must match Claude embedded_schema defaults exactly.
   defp default_claude_value(:command), do: "claude"
   defp default_claude_value(:turn_timeout_ms), do: 300_000
-  defp default_claude_value(:stall_timeout_ms), do: 60_000
+  defp default_claude_value(:stall_timeout_ms), do: 0
   defp default_claude_value(:max_turns), do: 10
   defp default_claude_value(_), do: nil
 
