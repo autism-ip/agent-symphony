@@ -165,7 +165,7 @@ hooks:
 runner:
   type: claude
   claude:
-    command: "$CLAUDE_BIN"
+    command: claude
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.

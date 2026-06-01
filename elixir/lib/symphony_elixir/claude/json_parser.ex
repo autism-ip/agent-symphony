@@ -90,8 +90,9 @@ defmodule SymphonyElixir.Claude.JsonParser do
       %{"is_error" => true, "result" => content} when is_binary(content) ->
         {:ok, %{status: :error, artifacts: [%{type: :text, content: content}]}}
 
-      %{"subtype" => subtype, "result" => content}
-      when subtype in ["error_max_turns", "error_during_execution"] and is_binary(content) ->
+      %{"subtype" => subtype} when subtype in ["error_max_turns", "error_during_execution", "error_max_budget_usd"] ->
+        # Error subtypes may omit the "result" field entirely — extract what we can.
+        content = Map.get(result_line, "result", inspect(Map.drop(result_line, ["type"])))
         {:ok, %{status: :error, artifacts: [%{type: :text, content: content}]}}
 
       %{"result" => content} when is_binary(content) ->
