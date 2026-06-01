@@ -674,8 +674,8 @@ defmodule SymphonyElixir.Config.Schema do
       %{type: "claude", claude: claude} ->
         claude.stall_timeout_ms
 
-      %{type: "codex", codex: codex} ->
-        codex.stall_timeout_ms
+      %{type: "codex"} ->
+        codex_fallback(settings, :stall_timeout_ms)
 
       _ ->
         settings.codex.stall_timeout_ms
