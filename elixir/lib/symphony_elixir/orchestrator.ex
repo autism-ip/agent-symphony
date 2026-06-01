@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Comments, Config, GitHub, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -26,6 +26,8 @@ defmodule SymphonyElixir.Orchestrator do
     Runtime state for the orchestrator polling loop.
     """
 
+    @type t :: %__MODULE__{}
+
     @defaults [
       running: %{},
       completed: MapSet.new(),
@@ -33,7 +35,8 @@ defmodule SymphonyElixir.Orchestrator do
       blocked: %{},
       retry_attempts: %{},
       runner_totals: nil,
-      runner_rate_limits: nil
+      runner_rate_limits: nil,
+      pr_tracking: %{}
     ]
 
     defstruct [
@@ -47,11 +50,11 @@ defmodule SymphonyElixir.Orchestrator do
     ]
 
     @doc "Backward-compat accessor: reads from runner_totals."
-    @spec codex_totals(%__MODULE__{}) :: map() | nil
+    @spec codex_totals(t()) :: map() | nil
     def codex_totals(%{runner_totals: val}), do: val
 
     @doc "Backward-compat accessor: reads from runner_rate_limits."
-    @spec codex_rate_limits(%__MODULE__{}) :: map() | nil
+    @spec codex_rate_limits(t()) :: map() | nil
     def codex_rate_limits(%{runner_rate_limits: val}), do: val
   end
 
@@ -204,6 +207,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
 
+  def handle_info({:delivery_complete, issue_id, delivery_info}, %{pr_tracking: pr_tracking} = state)
+      when is_binary(issue_id) and is_map(delivery_info) do
+    Logger.info("Tracking delivery for issue_id=#{issue_id} pr_url=#{delivery_info.pr_url}")
+    post_delivery_comment(issue_id, delivery_info)
+    entry = Map.put(delivery_info, :last_checked_at, DateTime.utc_now())
+    {:noreply, %{state | pr_tracking: Map.put(pr_tracking, issue_id, entry)}}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
@@ -260,6 +271,7 @@ defmodule SymphonyElixir.Orchestrator do
       state
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
+      |> reconcile_pr_tracking()
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
@@ -358,6 +370,67 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  defp reconcile_pr_tracking(%State{pr_tracking: pr_tracking} = state) when map_size(pr_tracking) == 0, do: state
+
+  defp reconcile_pr_tracking(%State{pr_tracking: pr_tracking} = state) do
+    Enum.reduce(pr_tracking, state, fn {issue_id, entry}, state_acc ->
+      poll_tracked_pr(state_acc, issue_id, entry)
+    end)
+  end
+
+  defp poll_tracked_pr(%State{} = state, issue_id, %{pr_url: pr_url, pr_number: pr_number} = entry) do
+    case parse_github_repo(pr_url) do
+      {:ok, repo} ->
+        do_poll_tracked_pr(state, issue_id, entry, repo, pr_number)
+
+      :error ->
+        Logger.debug("Cannot parse repo from pr_url=#{pr_url} for issue_id=#{issue_id}")
+        state
+    end
+  end
+
+  defp poll_tracked_pr(state, _issue_id, _entry), do: state
+
+  defp do_poll_tracked_pr(%State{pr_tracking: pr_tracking} = state, issue_id, entry, repo, pr_number) do
+    case GitHub.poll_pr_status(repo, pr_number) do
+      {:ok, %{status_check_rollup: rollup} = pr_info} ->
+        Logger.info("PR status for issue_id=#{issue_id}: rollup=#{rollup}")
+
+        updated =
+          entry
+          |> Map.put(:last_checked_at, DateTime.utc_now())
+          |> Map.put(:status_check_rollup, rollup)
+          |> Map.put(:pr_info, pr_info)
+
+        case rollup do
+          "SUCCESS" ->
+            Logger.info("PR ready for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
+            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
+
+          "FAILURE" ->
+            Logger.warning("PR checks failed for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
+            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
+
+          _ ->
+            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
+        end
+
+      {:error, reason} ->
+        Logger.debug("PR poll failed for issue_id=#{issue_id} pr_url=#{entry.pr_url}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  @spec parse_github_repo(String.t()) :: {:ok, String.t()} | :error
+  defp parse_github_repo(pr_url) when is_binary(pr_url) do
+    case Regex.run(~r{github\.com/([^/]+/[^/]+)/pull/}, pr_url) do
+      [_, repo] -> {:ok, repo}
+      _ -> :error
+    end
+  end
+
+  defp parse_github_repo(_), do: :error
+
   @doc false
   @spec reconcile_issue_states_for_test([Issue.t()], term()) :: term()
   def reconcile_issue_states_for_test(issues, %State{} = state) when is_list(issues) do
@@ -389,8 +462,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
-  @spec select_worker_host_for_test(term(), String.t() | nil) ::
-          String.t() | nil | :no_worker_capacity
+  @spec select_worker_host_for_test(term(), String.t() | nil) :: String.t() | nil | :no_worker_capacity
   def select_worker_host_for_test(%State{} = state, preferred_worker_host) do
     select_worker_host(state, preferred_worker_host)
   end
@@ -445,13 +517,11 @@ defmodule SymphonyElixir.Orchestrator do
     cond do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Blocked issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; releasing block")
-
         cleanup_issue_workspace(issue.identifier, blocked_issue_worker_host(state, issue.id))
         release_issue_claim(state, issue.id)
 
       !issue_routable_to_worker?(issue) ->
         Logger.info("Blocked issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; releasing block")
-
         release_issue_claim(state, issue.id)
 
       active_issue_state?(issue.state, active_states) ->
@@ -459,7 +529,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       true ->
         Logger.info("Blocked issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; releasing block")
-
         release_issue_claim(state, issue.id)
     end
   end
@@ -503,7 +572,6 @@ defmodule SymphonyElixir.Orchestrator do
         state_acc
       else
         Logger.info("Blocked issue no longer visible during state refresh: issue_id=#{issue_id}; releasing block")
-
         release_issue_claim(state_acc, issue_id)
       end
     end)
@@ -572,7 +640,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_stalled_running_issues(%State{} = state) do
-    timeout_ms = Config.codex_stall_timeout_ms()
+    timeout_ms = Config.stall_timeout_ms()
 
     cond do
       timeout_ms <= 0 ->
@@ -606,11 +674,7 @@ defmodule SymphonyElixir.Orchestrator do
       session_id = running_entry_session_id(running_entry)
 
       if input_required_blocker?(running_entry) do
-        error =
-          blocker_error(
-            running_entry,
-            "stalled for #{elapsed_ms}ms after Codex requested operator input"
-          )
+        error = blocker_error(running_entry, "stalled for #{elapsed_ms}ms after Codex requested operator input")
 
         Logger.warning("Issue blocked: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; #{error}")
 
@@ -698,14 +762,9 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp completion_blocker_error(completion) do
     case input_required_completion_outcome(completion) do
-      outcome when outcome in [:input_required, :needs_input] ->
-        "codex turn requires operator input"
-
-      :approval_required ->
-        "codex turn requires approval"
-
-      nil ->
-        nil
+      outcome when outcome in [:input_required, :needs_input] -> "codex turn requires operator input"
+      :approval_required -> "codex turn requires approval"
+      nil -> nil
     end
   end
 
@@ -917,17 +976,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, preferred_worker_host \\ nil) do
-    case revalidate_issue_for_dispatch(
-           issue,
-           &Tracker.fetch_issue_states_by_ids/1,
-           terminal_state_set()
-         ) do
+    case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
-
         state
 
       {:skip, %Issue{} = refreshed_issue} ->
@@ -937,7 +991,6 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
-
         state
     end
   end
@@ -948,7 +1001,6 @@ defmodule SymphonyElixir.Orchestrator do
     case select_worker_host(state, preferred_worker_host) do
       :no_worker_capacity ->
         Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
-
         state
 
       worker_host ->
@@ -1075,8 +1127,7 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token)
-       when is_reference(retry_token) do
+  defp pop_retry_attempt_state(%State{} = state, issue_id, retry_token) when is_reference(retry_token) do
     case Map.get(state.retry_attempts, issue_id) do
       %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
         metadata = %{
@@ -1169,6 +1220,26 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  # ------------------------------------------------------------------
+  # Delivery comment (best-effort)
+  # ------------------------------------------------------------------
+
+  defp post_delivery_comment(issue_id, delivery_info) do
+    run_info =
+      Comments.build_run_info(%{
+        issue_identifier: delivery_info.identifier,
+        pr_url: delivery_info.pr_url
+      })
+
+    case Comments.post_linear_comment(issue_id, run_info) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Delivery comment failed for issue_id=#{issue_id}: #{inspect(reason)}")
+    end
+  end
+
   defp notify_dashboard do
     StatusDashboard.notify_update()
   end
@@ -1203,8 +1274,7 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
-  defp retry_delay(attempt, metadata)
-       when is_integer(attempt) and attempt > 0 and is_map(metadata) do
+  defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
     if metadata[:delay_type] == :continuation and attempt == 1 do
       @continuation_retry_delay_ms
     else
@@ -1214,11 +1284,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp failure_retry_delay(attempt) do
     max_delay_power = min(attempt - 1, 10)
-
-    min(
-      @failure_retry_base_ms * (1 <<< max_delay_power),
-      Config.settings!().agent.max_retry_backoff_ms
-    )
+    min(@failure_retry_base_ms * (1 <<< max_delay_power), Config.settings!().agent.max_retry_backoff_ms)
   end
 
   defp normalize_retry_attempt(attempt) when is_integer(attempt) and attempt > 0, do: attempt
@@ -1290,8 +1356,7 @@ defmodule SymphonyElixir.Orchestrator do
     |> elem(0)
   end
 
-  defp running_worker_host_count(running, worker_host)
-       when is_map(running) and is_binary(worker_host) do
+  defp running_worker_host_count(running, worker_host) when is_map(running) and is_binary(worker_host) do
     Enum.count(running, fn
       {_issue_id, %{worker_host: ^worker_host}} -> true
       _ -> false

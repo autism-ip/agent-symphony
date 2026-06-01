@@ -1,7 +1,7 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  project_slug: "075b50263752"
   active_states:
     - Todo
     - In Progress
@@ -26,14 +26,20 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
-  max_concurrent_agents: 10
-  max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
+  max_concurrent_agents: 1
+  max_turns: 5
+runner:
+  type: claude
+  claude:
+    command: claude
+    turn_timeout_ms: 3600000
+    stall_timeout_ms: 3600000
+  codex:
+    command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+    approval_policy: never
+    thread_sandbox: workspace-write
+    turn_sandbox_policy:
+      type: workspaceWrite
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

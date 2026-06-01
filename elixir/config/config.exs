@@ -2,6 +2,12 @@ import Config
 
 config :phoenix, :json_library, Jason
 
+config :symphony_elixir, ecto_repos: [SymphonyElixir.Repo]
+
+config :symphony_elixir, SymphonyElixir.Repo,
+  database: Path.expand("../symphony_dev.db", __DIR__),
+  pool_size: 5
+
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
@@ -14,3 +20,5 @@ config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   secret_key_base: String.duplicate("s", 64),
   check_origin: false,
   server: false
+
+import_config "#{config_env()}.exs"

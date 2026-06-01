@@ -51,3 +51,8 @@ status.txt
 
 # Ignore package tarball (built via "mix hex.build").
 symphony_elixir-*.tar
+
+# SQLite runtime/test databases.
+*.db
+*.db-shm
+*.db-wal
