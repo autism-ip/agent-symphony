@@ -239,5 +239,4 @@ defmodule SymphonyElixir.Claude.RunnerTest do
       assert {:error, {:json_decode, _}} = Runner.parse_result("not json")
     end
   end
-
 end
