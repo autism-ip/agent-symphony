@@ -69,30 +69,31 @@ defmodule SymphonyElixir.Claude.Runner do
 
   @impl true
   def run_turn(session, prompt, timeout_ms) do
-    {command, args} = command_and_args(session, prompt)
-
-    # SSH commands handle cd internally; local commands need cd: option.
-    opts =
-      case session.worker_host do
-        host when is_binary(host) and host != "" ->
-          [stderr_to_stdout: true]
-
-        _ ->
-          [
-            cd: session.workspace,
-            stderr_to_stdout: true,
-            env: [
-              {"CLAUDECODE", nil},
-              {"CLAUDE_CODE_ENTRYPOINT", nil},
-              {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"}
-            ]
+    case command_and_args(session, prompt) do
+      {:local, command, args} ->
+        opts = [
+          cd: session.workspace,
+          stderr_to_stdout: true,
+          env: [
+            {"CLAUDECODE", nil},
+            {"CLAUDE_CODE_ENTRYPOINT", nil},
+            {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"}
           ]
-      end
+        ]
 
+        execute_with_timeout(session.cmd_fn, command, args, opts, timeout_ms, session)
+
+      {:ssh, command, args} ->
+        opts = [stderr_to_stdout: true]
+        execute_with_timeout(session.cmd_fn, command, args, opts, timeout_ms, session)
+    end
+  end
+
+  defp execute_with_timeout(cmd_fn, command, args, opts, timeout_ms, session) do
     task =
       Task.async(fn ->
         try do
-          {:ok, session.cmd_fn.(command, args, opts)}
+          {:ok, cmd_fn.(command, args, opts)}
         rescue
           e -> {:cmd_crash, e}
         catch
@@ -128,15 +129,20 @@ defmodule SymphonyElixir.Claude.Runner do
 
   defp command_and_args(session, prompt) do
     cli_args = turn_args(session, prompt)
-    local_cmd = build_local_command(session.command, cli_args)
 
     case session.worker_host do
       host when is_binary(host) and host != "" ->
+        # SSH path: use SSH.ssh_args/2 for host:port parsing, config, -T flag.
+        local_cmd = build_local_command(shell_escape(session.command), cli_args)
         remote_script = "cd #{shell_escape(session.workspace)} && #{local_cmd}"
-        {"ssh", SSH.ssh_args(host, remote_script)}
+        ssh_args = SSH.ssh_args(host, remote_script)
+        {:ssh, "ssh", ssh_args}
 
       _ ->
-        {"/bin/sh", ["-c", "exec \"$@\" </dev/null", "--" | [session.command | cli_args]]}
+        # Embed command directly in shell script so multi-word commands
+        # (e.g. "mise exec -- claude") work. stdin is redirected to /dev/null
+        # to prevent BEAM port pipe from blocking CLI reads.
+        {:local, "/bin/sh", ["-c", "#{session.command} </dev/null" | cli_args]}
     end
   end
 

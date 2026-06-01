@@ -38,12 +38,7 @@ defmodule SymphonyElixir.SSH do
     end
   end
 
-  @doc """
-  Build SSH argument list for the given host and command.
-
-  Handles `host:port` parsing, SYMPHONY_SSH_CONFIG injection, and `-T` flag.
-  Used by runners that need to construct SSH commands for `System.cmd/3`.
-  """
+  @doc false
   @spec ssh_args(String.t(), String.t()) :: [String.t()]
   def ssh_args(host, command) do
     %{destination: destination, port: port} = parse_target(host)
