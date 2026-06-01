@@ -579,7 +579,7 @@ defmodule SymphonyElixir.GitHub do
   defp normalize_check_rollup(checks) when is_list(checks) do
     cond do
       checks == [] ->
-        "PENDING"
+        "SUCCESS"
 
       Enum.all?(checks, &check_completed_and_successful?(&1)) ->
         "SUCCESS"
@@ -592,6 +592,7 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
+  defp normalize_check_rollup(nil), do: "SUCCESS"
   defp normalize_check_rollup(%{"state" => state}) when is_binary(state), do: state
   defp normalize_check_rollup(state) when is_binary(state), do: state
   defp normalize_check_rollup(_), do: "PENDING"

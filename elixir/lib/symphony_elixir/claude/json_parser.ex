@@ -29,19 +29,15 @@ defmodule SymphonyElixir.Claude.JsonParser do
   # ------------------------------------------------------------------
 
   defp ndjson?(trimmed) do
-    case String.split(trimmed, "\n", parts: 2) do
-      [first_line, _rest] ->
-        case Jason.decode(first_line) do
-          {:ok, %{"type" => _}} -> true
-          _ -> false
-        end
-
-      [single_line] ->
-        case Jason.decode(single_line) do
-          {:ok, %{"type" => _}} -> true
-          _ -> false
-        end
-    end
+    trimmed
+    |> String.split("\n")
+    |> Enum.find_value(false, fn line ->
+      case Jason.decode(line) do
+        {:ok, %{"type" => _}} -> true
+        {:ok, _} -> false
+        _ -> nil
+      end
+    end)
   end
 
   defp single_json?(trimmed) do

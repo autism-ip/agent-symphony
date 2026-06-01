@@ -404,11 +404,11 @@ defmodule SymphonyElixir.Orchestrator do
         case rollup do
           "SUCCESS" ->
             Logger.info("PR ready for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
-            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
+            %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
 
           "FAILURE" ->
             Logger.warning("PR checks failed for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
-            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
+            %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
 
           _ ->
             %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
