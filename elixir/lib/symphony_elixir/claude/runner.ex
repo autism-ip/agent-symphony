@@ -100,7 +100,7 @@ defmodule SymphonyElixir.Claude.Runner do
         end
       end)
 
-    case Task.yield(task, timeout_ms) || Task.shutdown(task) do
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, {:ok, {output, 0}}} ->
         session_id = extract_session_id(output)
         {:ok, output, %{session | session_id: session_id}}

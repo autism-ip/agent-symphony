@@ -440,10 +440,10 @@ defmodule SymphonyElixir.GitHub do
   end
 
   defp do_commit(worker_host, %Issue{} = issue, workspace_path) do
-    msg = commit_message(issue) |> String.replace("'", "'\\''")
+    msg = commit_message(issue)
     message_path = "#{workspace_path}/.git/COMMIT_MSG_SYMPHONY"
 
-    write_cmd = "echo '#{msg}' > #{message_path}"
+    write_cmd = "cat <<'SYMPHONY_HEREDOC' > #{message_path}\n#{msg}\nSYMPHONY_HEREDOC"
     commit_cmd = "cd #{workspace_path} && git -c user.name='Symphony' -c user.email='symphony@agent' commit -F #{message_path}"
     clean_cmd = "rm -f #{message_path}"
     script = "#{write_cmd} && #{commit_cmd} && #{clean_cmd} || { #{clean_cmd}; exit 1; }"
@@ -583,10 +583,10 @@ defmodule SymphonyElixir.GitHub do
   defp create_draft_pr(worker_host, %Issue{} = issue, branch, workspace_path) do
     base = detect_default_branch(worker_host, workspace_path)
     title = pr_title(issue) |> String.replace("'", "'\\''")
-    body = pr_body(issue) |> String.replace("'", "'\\''")
+    body = pr_body(issue)
     body_path = "#{workspace_path}/.git/PR_BODY_SYMPHONY"
 
-    write_cmd = "echo '#{body}' > #{body_path}"
+    write_cmd = "cat <<'SYMPHONY_HEREDOC' > #{body_path}\n#{body}\nSYMPHONY_HEREDOC"
 
     create_cmd =
       "cd #{workspace_path} && gh pr create --title '#{title}' --body-file #{body_path} --base #{base} --head #{branch} --draft"
