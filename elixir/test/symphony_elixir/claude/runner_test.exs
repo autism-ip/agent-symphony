@@ -97,7 +97,7 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         session_id: nil,
         cmd_fn: fn command, args, opts ->
           assert command == "/bin/sh"
-          assert ["-c", "exec \"$0\" \"$@\" </dev/null", "claude" | claude_args] = args
+          assert ["-c", "exec \"$@\" </dev/null", "--", "claude" | claude_args] = args
           assert "-p" in claude_args
           assert prompt in claude_args
           assert "--dangerously-skip-permissions" in claude_args
@@ -134,7 +134,7 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         max_turns: 10,
         session_id: "sess_abc",
         cmd_fn: fn _command, args, _opts ->
-          assert ["-c", "exec \"$0\" \"$@\" </dev/null", "claude" | claude_args] = args
+          assert ["-c", "exec \"$@\" </dev/null", "--", "claude" | claude_args] = args
           assert "--resume" in claude_args
           assert "sess_abc" in claude_args
 
