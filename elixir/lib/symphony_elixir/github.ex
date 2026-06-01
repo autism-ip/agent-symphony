@@ -354,13 +354,28 @@ defmodule SymphonyElixir.GitHub do
   @spec ensure_branch(host(), String.t(), Path.t()) ::
           {:ok, String.t()} | {:error, delivery_error()}
   defp ensure_branch(worker_host, branch, workspace_path) do
-    case git_cmd(worker_host, ["checkout", "-b", branch], workspace_path) do
+    # Try fetching the remote branch first (handles re-runs on same issue)
+    case git_cmd(worker_host, ["fetch", "origin", branch], workspace_path) do
       {_output, 0} ->
-        Logger.info("Created branch: #{branch}")
-        {:ok, branch}
+        case git_cmd(worker_host, ["checkout", branch], workspace_path) do
+          {_output, 0} ->
+            Logger.info("Checked out remote branch: #{branch}")
+            {:ok, branch}
 
-      {_output, _status} ->
-        switch_to_existing_branch(worker_host, branch, workspace_path)
+          {output, _status} ->
+            {:error, {:branch_failed, "checkout after fetch failed: #{String.trim(output)}"}}
+        end
+
+      _ ->
+        # Branch doesn't exist on remote; create a new local branch
+        case git_cmd(worker_host, ["checkout", "-b", branch], workspace_path) do
+          {_output, 0} ->
+            Logger.info("Created branch: #{branch}")
+            {:ok, branch}
+
+          {_output, _status} ->
+            switch_to_existing_branch(worker_host, branch, workspace_path)
+        end
     end
   end
 
@@ -426,7 +441,7 @@ defmodule SymphonyElixir.GitHub do
     message_path = "#{workspace_path}/.git/COMMIT_MSG_SYMPHONY"
 
     write_cmd = "echo '#{msg}' > #{message_path}"
-    commit_cmd = "cd #{workspace_path} && git commit -F #{message_path}"
+    commit_cmd = "cd #{workspace_path} && git -c user.name='Symphony' -c user.email='symphony@agent' commit -F #{message_path}"
     clean_cmd = "rm -f #{message_path}"
     script = "#{write_cmd} && #{commit_cmd}; #{clean_cmd}"
 
@@ -531,7 +546,9 @@ defmodule SymphonyElixir.GitHub do
     File.write!(body_file, body)
 
     try do
-      case System.cmd(
+      base = detect_default_branch(nil, workspace_path)
+
+    case System.cmd(
              "gh",
              [
                "pr",
@@ -541,7 +558,7 @@ defmodule SymphonyElixir.GitHub do
                "--body-file",
                body_file,
                "--base",
-               "main",
+               base,
                "--head",
                branch,
                "--draft"
@@ -561,6 +578,7 @@ defmodule SymphonyElixir.GitHub do
   end
 
   defp create_draft_pr(worker_host, %Issue{} = issue, branch, workspace_path) do
+    base = detect_default_branch(worker_host, workspace_path)
     title = pr_title(issue) |> String.replace("'", "'\\''")
     body = pr_body(issue) |> String.replace("'", "'\\''")
     body_path = "#{workspace_path}/.git/PR_BODY_SYMPHONY"
@@ -568,7 +586,7 @@ defmodule SymphonyElixir.GitHub do
     write_cmd = "echo '#{body}' > #{body_path}"
 
     create_cmd =
-      "cd #{workspace_path} && gh pr create --title '#{title}' --body-file #{body_path} --base main --head #{branch} --draft"
+      "cd #{workspace_path} && gh pr create --title '#{title}' --body-file #{body_path} --base #{base} --head #{branch} --draft"
 
     clean_cmd = "rm -f #{body_path}"
     script = "#{write_cmd} && #{create_cmd}; #{clean_cmd}"
@@ -716,6 +734,18 @@ defmodule SymphonyElixir.GitHub do
     case git_cmd(worker_host, ["status", "--porcelain"], workspace_path) do
       {"", 0} -> false
       _ -> true
+    end
+  end
+
+  # Detect the default branch (main/master) from the remote.
+  @spec detect_default_branch(host(), Path.t()) :: String.t()
+  defp detect_default_branch(worker_host, workspace_path) do
+    case git_cmd(worker_host, ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], workspace_path) do
+      {output, 0} ->
+        output |> String.trim() |> String.replace_prefix("origin/", "")
+
+      _ ->
+        "main"
     end
   end
 

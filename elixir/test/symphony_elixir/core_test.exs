@@ -1058,7 +1058,8 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
-      assert :ok = AgentRunner.run(issue)
+      # Delivery fails in test (workspace is not a real git repo) — catch the raise
+      assert_raise RuntimeError, ~r/delivery_failed/, fn -> AgentRunner.run(issue) end
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =
@@ -1337,7 +1338,10 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      # Delivery fails in test (workspace is not a real git repo) — catch the raise
+      assert_raise RuntimeError, ~r/delivery_failed/, fn ->
+        AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      end
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 
@@ -1454,7 +1458,9 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert_raise RuntimeError, ~r/max_turns_reached_active_issue/, fn ->
+        AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      end
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1

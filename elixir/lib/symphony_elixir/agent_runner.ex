@@ -109,10 +109,10 @@ defmodule SymphonyElixir.AgentRunner do
           )
 
         {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; skipping delivery and returning control to orchestrator")
           persist_artifacts(runner, workspace, refreshed_issue, text)
 
-          :ok
+          {:error, :max_turns_reached_active_issue}
 
         {:done, refreshed_issue} ->
           persist_artifacts(runner, workspace, refreshed_issue, text)
@@ -269,7 +269,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.warning("Delivery failed for #{issue_context(issue)}: #{inspect(reason)}")
-        :ok
+        {:error, {:delivery_failed, reason}}
     end
   end
 
