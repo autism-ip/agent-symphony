@@ -78,6 +78,9 @@ defmodule SymphonyElixir.Config do
   @spec codex_stall_timeout_ms() :: non_neg_integer()
   def codex_stall_timeout_ms, do: Schema.codex_fallback(settings!(), :stall_timeout_ms)
 
+  @spec stall_timeout_ms() :: non_neg_integer()
+  def stall_timeout_ms, do: Schema.stall_timeout_ms(settings!())
+
   @spec codex_thread_sandbox() :: String.t()
   def codex_thread_sandbox, do: Schema.codex_fallback(settings!(), :thread_sandbox)
 

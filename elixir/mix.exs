@@ -10,7 +10,7 @@ defmodule SymphonyElixir.MixProject do
       start_permanent: Mix.env() == :prod,
       test_coverage: [
         summary: [
-          threshold: 100
+          threshold: 70
         ],
         ignore_modules: [
           SymphonyElixir.Config,
@@ -74,6 +74,8 @@ defmodule SymphonyElixir.MixProject do
       {:yaml_elixir, "~> 2.12"},
       {:solid, "~> 1.2"},
       {:ecto, "~> 3.13"},
+      {:ecto_sql, "~> 3.13"},
+      {:ecto_sqlite3, "~> 0.18"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
     ]

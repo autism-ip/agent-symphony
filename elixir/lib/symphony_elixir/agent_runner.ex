@@ -41,6 +41,7 @@ defmodule SymphonyElixir.AgentRunner do
         end
 
       {:error, reason} ->
+        Logger.error("Worker host setup failed for #{issue_context(issue)}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -206,38 +207,34 @@ defmodule SymphonyElixir.AgentRunner do
   defp persist_artifacts(_runner, _workspace, _issue, ""), do: :ok
 
   defp persist_artifacts(runner, workspace, issue, text) do
-    runner
-    |> parsed_artifacts(issue, text)
-    |> save_artifacts(workspace, issue)
-  rescue
-    e ->
-      Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
-  end
+    try do
+      case runner.parse_result(text) do
+        {:ok, %{artifacts: artifacts}} when is_list(artifacts) and artifacts != [] ->
+          non_empty = Enum.reject(artifacts, &empty_artifact?/1)
 
-  defp parsed_artifacts(runner, issue, text) do
-    case runner.parse_result(text) do
-      {:ok, %{artifacts: artifacts}} when is_list(artifacts) ->
-        {:ok, Enum.reject(artifacts, &empty_artifact?/1)}
+          case non_empty do
+            [] ->
+              :ok
 
-      {:ok, _empty_result} ->
-        :ok
+            _ ->
+              case ArtifactStore.save(workspace, issue.id, non_empty) do
+                :ok ->
+                  :ok
 
-      {:error, reason} ->
-        {:warning, "parse_result failed for #{issue_context(issue)}: #{inspect(reason)}"}
-    end
-  end
+                {:error, reason} ->
+                  Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
+              end
+          end
 
-  defp save_artifacts(:ok, _workspace, _issue), do: :ok
-  defp save_artifacts({:ok, []}, _workspace, _issue), do: :ok
-  defp save_artifacts({:warning, message}, _workspace, _issue), do: Logger.warning(message)
+        {:ok, _empty_result} ->
+          :ok
 
-  defp save_artifacts({:ok, artifacts}, workspace, issue) do
-    case ArtifactStore.save(workspace, issue.id, artifacts) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("parse_result failed for #{issue_context(issue)}: #{inspect(reason)}")
+      end
+    rescue
+      e ->
+        Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
     end
   end
 

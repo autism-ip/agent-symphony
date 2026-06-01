@@ -38,7 +38,9 @@ defmodule SymphonyElixir.SSH do
     end
   end
 
-  defp ssh_args(host, command) do
+  @doc false
+  @spec ssh_args(String.t(), String.t()) :: [String.t()]
+  def ssh_args(host, command) do
     %{destination: destination, port: port} = parse_target(host)
 
     []

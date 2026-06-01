@@ -28,6 +28,26 @@ defmodule SymphonyElixir.SecurityTest do
       config = codex_config("codex `whoami`")
       assert {:error, :invalid_command} = Schema.parse(config)
     end
+
+    test "rejects command containing newline" do
+      config = codex_config("codex\nmalicious")
+      assert {:error, :invalid_command} = Schema.parse(config)
+    end
+
+    test "rejects command containing redirect" do
+      config = codex_config("codex > /tmp/out")
+      assert {:error, :invalid_command} = Schema.parse(config)
+    end
+
+    test "rejects command containing backslash" do
+      config = codex_config("codex\\nmalicious")
+      assert {:error, :invalid_command} = Schema.parse(config)
+    end
+
+    test "accepts multi-word command without metacharacters" do
+      config = codex_config("mise exec -- codex")
+      assert {:ok, _settings} = Schema.parse(config)
+    end
   end
 
   # ================================================================

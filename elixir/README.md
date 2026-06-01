@@ -15,19 +15,18 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 1. Polls Linear for candidate work
 2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+3. Launches the configured runner (Claude Code CLI or Codex app-server) inside the workspace
+4. Sends a workflow prompt to the agent
+5. Keeps the agent working on the issue until the work is done
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+During Codex app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that
+repo skills can make raw Linear GraphQL calls.
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
 
-If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
-issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
+If the agent reports that operator input, approval, or MCP elicitation is required, Symphony keeps
+the issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
 entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
 Linear issue can become a dispatch candidate again after restart.
 
@@ -86,9 +85,9 @@ Optional flags:
 - `--port` also starts the Phoenix observability service (default: disabled)
 
 The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+agent session prompt.
 
-Minimal example:
+Minimal example (Claude runner):
 
 ```md
 ---
@@ -103,8 +102,10 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
-codex:
-  command: codex app-server
+runner:
+  type: claude
+  claude:
+    command: claude
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -112,9 +113,24 @@ You are working on a Linear issue {{ issue.identifier }}.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
+Legacy Codex format (still supported — automatically migrated to `runner.type: codex`):
+
+```md
+---
+codex:
+  command: codex app-server
+---
+```
+
 Notes:
 
 - If a value is missing, defaults are used.
+- `runner.type` selects the agent backend: `claude` or `codex`. When `runner:` is absent but
+  `codex:` is present, the top-level `codex:` config is used as a backward-compatible fallback.
+- `runner.claude.command` defaults to `claude`. Supports multi-word wrappers such as `mise exec -- claude`.
+- `runner.claude.turn_timeout_ms` defaults to `300000` (5 min). `runner.claude.stall_timeout_ms`
+  defaults to `0` (disabled) because Claude runs synchronously via `System.cmd` and sends no heartbeats.
+- `runner.claude.max_turns` defaults to `10`. Limits agentic turns per Claude CLI invocation.
 - Safer Codex defaults are used when policy fields are omitted:
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
@@ -124,7 +140,7 @@ Notes:
 - When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
   unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
   Symphony validation.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back agent turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
@@ -135,8 +151,8 @@ Notes:
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
 - For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
-  while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
-  launched shell.
+  while `runner.claude.command` / `codex.command` stays a shell command string and any `$VAR`
+  expansion there happens in the launched shell.
 
 ```yaml
 tracker:
@@ -146,8 +162,10 @@ workspace:
 hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
-codex:
-  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
+runner:
+  type: claude
+  claude:
+    command: claude
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.

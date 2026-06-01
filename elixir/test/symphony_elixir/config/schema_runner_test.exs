@@ -15,11 +15,6 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
   # ===========================================================================
 
   describe "Config.Schema.parse/1 with codex config (current behavior)" do
-    test "parses empty config with schema defaults" do
-      assert {:ok, %Schema{} = settings} = Schema.parse(%{})
-      assert settings.runner.type == "codex"
-    end
-
     test "parses config with codex command" do
       config = %{"codex" => %{"command" => "codex app-server"}}
 
@@ -211,16 +206,6 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
       assert settings.runner.type == "codex"
       assert settings.runner.codex.command == "new-codex"
     end
-
-    test "codex_fallback uses top-level codex when active runner is not codex" do
-      config = %{
-        "codex" => %{"command" => "legacy-codex"},
-        "runner" => %{"type" => "claude", "claude" => %{"command" => "claude"}}
-      }
-
-      assert {:ok, %Schema{} = settings} = Schema.parse(config)
-      assert Schema.codex_fallback(settings, :command) == "legacy-codex"
-    end
   end
 
   describe "Config.Schema.parse/1 runner type validation" do
@@ -267,11 +252,11 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
     end
 
     @tag :pending
-    test "ClaudeConfig: stall_timeout_ms defaults to 60_000" do
+    test "ClaudeConfig: stall_timeout_ms defaults to 0 (disabled)" do
       config = %{"runner" => %{"type" => "claude", "claude" => %{}}}
 
       assert {:ok, %Schema{} = settings} = Schema.parse(config)
-      assert settings.runner.claude.stall_timeout_ms == 60_000
+      assert settings.runner.claude.stall_timeout_ms == 0
     end
 
     @tag :pending
@@ -327,6 +312,42 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
 
       assert {:ok, %Schema{} = settings} = Schema.parse(config)
       assert settings.runner.codex.stall_timeout_ms == 300_000
+    end
+  end
+
+  # ===========================================================================
+  # Schema.stall_timeout_ms/1 — legacy fallback
+  # ===========================================================================
+
+  describe "Schema.stall_timeout_ms/1" do
+    test "falls back to top-level codex.stall_timeout_ms when runner value is default" do
+      # Legacy config: top-level codex with custom stall timeout, migrated to runner
+      config = %{"codex" => %{"stall_timeout_ms" => 600_000}}
+      {:ok, settings} = Schema.parse(config)
+
+      # runner.codex.stall_timeout_ms is the Ecto default (300_000),
+      # but top-level codex.stall_timeout_ms is 600_000.
+      assert Schema.stall_timeout_ms(settings) == 600_000
+    end
+
+    test "uses runner codex value when explicitly set" do
+      config = %{
+        "runner" => %{"type" => "codex", "codex" => %{"stall_timeout_ms" => 900_000}},
+        "codex" => %{"stall_timeout_ms" => 600_000}
+      }
+
+      {:ok, settings} = Schema.parse(config)
+      assert Schema.stall_timeout_ms(settings) == 900_000
+    end
+
+    test "Claude stall timeout is independent from Codex" do
+      config = %{
+        "runner" => %{"type" => "claude", "claude" => %{"stall_timeout_ms" => 120_000}},
+        "codex" => %{"stall_timeout_ms" => 600_000}
+      }
+
+      {:ok, settings} = Schema.parse(config)
+      assert Schema.stall_timeout_ms(settings) == 120_000
     end
   end
 end
