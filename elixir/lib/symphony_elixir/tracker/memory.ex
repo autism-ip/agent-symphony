@@ -35,6 +35,11 @@ defmodule SymphonyElixir.Tracker.Memory do
      end)}
   end
 
+  @spec fetch_comments(String.t()) :: {:ok, [map()]} | {:error, term()}
+  def fetch_comments(_issue_id) do
+    {:ok, []}
+  end
+
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
     send_event({:memory_tracker_comment, issue_id, body})

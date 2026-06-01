@@ -51,7 +51,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
-
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
     end
 
@@ -140,12 +139,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [
-          :max_concurrent_agents,
-          :max_turns,
-          :max_retry_backoff_ms,
-          :max_concurrent_agents_by_state
-        ],
+        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
@@ -277,7 +271,11 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:command, :string, default: "claude")
       field(:turn_timeout_ms, :integer, default: 300_000)
-      field(:stall_timeout_ms, :integer, default: 60_000)
+      # Claude runs synchronously via System.cmd — no heartbeats are sent
+      # during execution, so stall detection would false-positive on any
+      # turn longer than the timeout.  Disable by default; the per-turn
+      # timeout (turn_timeout_ms) already protects against hung processes.
+      field(:stall_timeout_ms, :integer, default: 0)
       field(:max_turns, :integer, default: 10)
     end
 
@@ -297,28 +295,19 @@ defmodule SymphonyElixir.Config.Schema do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
-    alias SymphonyElixir.Config.Schema.Codex
 
     @primary_key false
     embedded_schema do
       field(:type, :string, default: "codex")
-
-      embeds_one(:codex, Codex,
-        on_replace: :update,
-        defaults_to_struct: true
-      )
-
-      embeds_one(:claude, SymphonyElixir.Config.Schema.ClaudeConfig,
-        on_replace: :update,
-        defaults_to_struct: true
-      )
+      embeds_one(:codex, SymphonyElixir.Config.Schema.Codex, on_replace: :update, defaults_to_struct: true)
+      embeds_one(:claude, SymphonyElixir.Config.Schema.ClaudeConfig, on_replace: :update, defaults_to_struct: true)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
       |> cast(attrs, [:type], empty_values: [])
-      |> cast_embed(:codex, with: &Codex.changeset/2)
+      |> cast_embed(:codex, with: &SymphonyElixir.Config.Schema.Codex.changeset/2)
       |> cast_embed(:claude, with: &ClaudeConfig.changeset/2)
     end
   end
@@ -346,9 +335,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     runner_cfg = Map.get(config, "runner") || Map.get(config, :runner)
     has_runner_key = runner_cfg != nil
-
-    has_runner_type =
-      is_map(runner_cfg) and (Map.has_key?(runner_cfg, "type") or Map.has_key?(runner_cfg, :type))
+    has_runner_type = is_map(runner_cfg) and (Map.has_key?(runner_cfg, "type") or Map.has_key?(runner_cfg, :type))
 
     normalized
     |> changeset()
@@ -482,6 +469,8 @@ defmodule SymphonyElixir.Config.Schema do
     {:error, {:invalid_workflow_config, "runner.type must be one of: #{Enum.join(@runner_valid_types, ", ")}"}}
   end
 
+  defp validate_runner_type(_settings, _has_runner_key, _has_runner_type), do: :ok
+
   defp changeset(attrs) do
     %__MODULE__{}
     |> cast(attrs, [])
@@ -506,11 +495,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     workspace = %{
       settings.workspace
-      | root:
-          resolve_path_value(
-            settings.workspace.root,
-            Path.join(System.tmp_dir!(), "symphony_workspaces")
-          )
+      | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
     codex = %{
@@ -656,8 +641,44 @@ defmodule SymphonyElixir.Config.Schema do
         top_value = Map.get(settings.codex, field)
         if runner_value != default_codex_value(field), do: runner_value, else: top_value
 
+      %{type: "claude", claude: runner_claude} ->
+        runner_value = Map.get(runner_claude, field)
+        default = default_claude_value(field)
+
+        cond do
+          runner_value != nil and runner_value != default ->
+            # User explicitly set a non-default value in runner.claude
+            runner_value
+
+          runner_value != nil ->
+            # User set a value that happens to equal the Claude default — honor it
+            runner_value
+
+          true ->
+            # Field not set in runner.claude — fall back to top-level codex
+            Map.get(settings.codex, field)
+        end
+
       _ ->
         Map.get(settings.codex, field)
+    end
+  end
+
+  # Runner-aware stall timeout: returns the value from the active runner config
+  # without cross-falling back to the other runner type's top-level settings.
+  # Claude's 60s default must not be overridden by Codex's 300s.
+  @doc false
+  @spec stall_timeout_ms(t()) :: non_neg_integer()
+  def stall_timeout_ms(settings) do
+    case settings.runner do
+      %{type: "claude", claude: claude} ->
+        claude.stall_timeout_ms
+
+      %{type: "codex", codex: codex} ->
+        codex.stall_timeout_ms
+
+      _ ->
+        settings.codex.stall_timeout_ms
     end
   end
 
@@ -667,11 +688,15 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_codex_value(:read_timeout_ms), do: 5_000
   defp default_codex_value(:stall_timeout_ms), do: 300_000
   defp default_codex_value(:thread_sandbox), do: "workspace-write"
-
-  defp default_codex_value(:approval_policy),
-    do: %{"reject" => %{"sandbox_approval" => true, "rules" => true, "mcp_elicitations" => true}}
-
+  defp default_codex_value(:approval_policy), do: %{"reject" => %{"sandbox_approval" => true, "rules" => true, "mcp_elicitations" => true}}
   defp default_codex_value(:turn_sandbox_policy), do: nil
+
+  # Must match Claude embedded_schema defaults exactly.
+  defp default_claude_value(:command), do: "claude"
+  defp default_claude_value(:turn_timeout_ms), do: 300_000
+  defp default_claude_value(:stall_timeout_ms), do: 60_000
+  defp default_claude_value(:max_turns), do: 10
+  defp default_claude_value(_), do: nil
 
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace

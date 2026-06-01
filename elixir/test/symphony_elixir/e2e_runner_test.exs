@@ -99,7 +99,9 @@ defmodule SymphonyElixir.E2ERunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
         max_turns: 10,
+        session_id: nil,
         cmd_fn: fn _cmd, _args, _opts -> {"rate limited", 1} end
       }
 
@@ -113,9 +115,11 @@ defmodule SymphonyElixir.E2ERunnerTest do
         issue_id: "1",
         issue_title: "t",
         command: "claude",
+        worker_host: nil,
         max_turns: 10,
+        session_id: nil,
         cmd_fn: fn _cmd, _args, _opts ->
-          raise %ErlangError{original: :timeout}
+          Process.sleep(:infinity)
         end
       }
 

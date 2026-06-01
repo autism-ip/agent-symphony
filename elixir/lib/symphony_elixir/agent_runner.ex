@@ -4,7 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
-  alias SymphonyElixir.{ArtifactStore, Config, Linear.Issue, PromptBuilder, Runner, Tracker, Workspace}
+  alias SymphonyElixir.{ArtifactStore, Config, GitHub, Linear.Issue, PromptBuilder, Runner, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -32,15 +32,23 @@ defmodule SymphonyElixir.AgentRunner do
       {:ok, workspace} ->
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
-        try do
-          with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+        run_result =
+          try do
+            with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
+                 :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+              :ok
+            end
+          after
+            Workspace.run_after_run_hook(workspace, issue, worker_host)
           end
-        after
-          Workspace.run_after_run_hook(workspace, issue, worker_host)
+
+        case run_result do
+          :ok -> attempt_delivery(issue, workspace, worker_host)
+          error -> error
         end
 
       {:error, reason} ->
+        Logger.error("Worker host setup failed for #{issue_context(issue)}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -68,45 +76,46 @@ defmodule SymphonyElixir.AgentRunner do
 
     with {:ok, session} <- runner.start_session(issue, workspace, worker_host) do
       try do
-        turn_context = %{
-          codex_update_recipient: codex_update_recipient,
-          issue_state_fetcher: issue_state_fetcher,
-          max_turns: max_turns,
-          opts: opts,
-          runner: runner,
-          workspace: workspace
-        }
-
-        do_run_codex_turns(turn_context, session, issue, 1)
+        do_run_codex_turns(runner, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after
         runner.stop_session(session)
       end
     end
   end
 
-  defp do_run_codex_turns(context, session, issue, turn_number) do
-    prompt = build_turn_prompt(issue, context.opts, turn_number, context.max_turns)
-    timeout_ms = runner_turn_timeout(context.runner)
+  defp do_run_codex_turns(runner, session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+    timeout_ms = runner_turn_timeout(runner)
 
     with {:ok, text, session} <-
-           context.runner.run_turn(session, prompt, timeout_ms) do
-      Logger.info("Completed agent run for #{issue_context(issue)} workspace=#{context.workspace} turn=#{turn_number}/#{context.max_turns}")
+           runner.run_turn(session, prompt, timeout_ms) do
+      Logger.info("Completed agent run for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, context.issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < context.max_turns ->
-          persist_artifacts(context.runner, context.workspace, refreshed_issue, text)
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{context.max_turns}")
+      case continue_with_issue?(issue, issue_state_fetcher) do
+        {:continue, refreshed_issue} when turn_number < max_turns ->
+          persist_artifacts(runner, workspace, refreshed_issue, text)
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(context, session, refreshed_issue, turn_number + 1)
+          do_run_codex_turns(
+            runner,
+            session,
+            workspace,
+            refreshed_issue,
+            codex_update_recipient,
+            opts,
+            issue_state_fetcher,
+            turn_number + 1,
+            max_turns
+          )
 
         {:continue, refreshed_issue} ->
           Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
-          persist_artifacts(context.runner, context.workspace, refreshed_issue, text)
+          persist_artifacts(runner, workspace, refreshed_issue, text)
 
           :ok
 
         {:done, refreshed_issue} ->
-          persist_artifacts(context.runner, context.workspace, refreshed_issue, text)
+          persist_artifacts(runner, workspace, refreshed_issue, text)
 
           :ok
 
@@ -206,42 +215,80 @@ defmodule SymphonyElixir.AgentRunner do
   defp persist_artifacts(_runner, _workspace, _issue, ""), do: :ok
 
   defp persist_artifacts(runner, workspace, issue, text) do
-    runner
-    |> parsed_artifacts(issue, text)
-    |> save_artifacts(workspace, issue)
-  rescue
-    e ->
-      Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
-  end
+    try do
+      case runner.parse_result(text) do
+        {:ok, %{artifacts: artifacts}} when is_list(artifacts) and artifacts != [] ->
+          non_empty = Enum.reject(artifacts, &empty_artifact?/1)
 
-  defp parsed_artifacts(runner, issue, text) do
-    case runner.parse_result(text) do
-      {:ok, %{artifacts: artifacts}} when is_list(artifacts) ->
-        {:ok, Enum.reject(artifacts, &empty_artifact?/1)}
+          case non_empty do
+            [] ->
+              :ok
 
-      {:ok, _empty_result} ->
-        :ok
+            _ ->
+              case ArtifactStore.save(workspace, issue.id, non_empty) do
+                :ok ->
+                  :ok
 
-      {:error, reason} ->
-        {:warning, "parse_result failed for #{issue_context(issue)}: #{inspect(reason)}"}
-    end
-  end
+                {:error, reason} ->
+                  Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
+              end
+          end
 
-  defp save_artifacts(:ok, _workspace, _issue), do: :ok
-  defp save_artifacts({:ok, []}, _workspace, _issue), do: :ok
-  defp save_artifacts({:warning, message}, _workspace, _issue), do: Logger.warning(message)
+        {:ok, _empty_result} ->
+          :ok
 
-  defp save_artifacts({:ok, artifacts}, workspace, issue) do
-    case ArtifactStore.save(workspace, issue.id, artifacts) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Artifact persistence failed for #{issue_context(issue)}: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("parse_result failed for #{issue_context(issue)}: #{inspect(reason)}")
+      end
+    rescue
+      e ->
+        Logger.warning("Artifact persistence crashed for #{issue_context(issue)}: #{inspect(e)}")
     end
   end
 
   defp empty_artifact?(%{type: :text, content: content}) when is_binary(content), do: String.trim(content) == ""
   defp empty_artifact?(%{type: :comment, content: content}) when is_binary(content), do: String.trim(content) == ""
   defp empty_artifact?(_artifact), do: false
+
+  # ------------------------------------------------------------------
+  # GitHub delivery (best-effort, post-run)
+  # ------------------------------------------------------------------
+
+  defp attempt_delivery(%Issue{} = issue, workspace, _worker_host) do
+    case GitHub.deliver(issue, workspace) do
+      {:ok, delivery} ->
+        Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")
+        report_delivery(issue, delivery)
+        :ok
+
+      {:error, :no_changes} ->
+        Logger.info("No changes to deliver for #{issue_context(issue)}")
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Delivery failed for #{issue_context(issue)}: #{inspect(reason)}")
+        :ok
+    end
+  end
+
+  defp report_delivery(%Issue{id: issue_id, identifier: identifier}, delivery) do
+    case Process.whereis(SymphonyElixir.Orchestrator) do
+      nil ->
+        :ok
+
+      pid ->
+        send(
+          pid,
+          {:delivery_complete, issue_id,
+           %{
+             identifier: identifier,
+             pr_url: delivery.pr_url,
+             pr_number: delivery.pr_number,
+             branch: delivery.branch
+           }}
+        )
+
+        :ok
+    end
+  end
 end
