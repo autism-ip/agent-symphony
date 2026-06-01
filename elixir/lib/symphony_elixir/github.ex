@@ -278,9 +278,8 @@ defmodule SymphonyElixir.GitHub do
   def ready?(%{merged: true}), do: true
   def ready?(%{state: "MERGED"}), do: true
   def ready?(%{state: "OPEN", mergeable: "CONFLICTING"}), do: false
-  def ready?(%{state: "OPEN", mergeable: mergeable, status_check_rollup: "SUCCESS"})
-      when mergeable in ["MERGEABLE", "UNKNOWN"],
-      do: true
+  def ready?(%{state: "OPEN", mergeable: "MERGEABLE", status_check_rollup: "SUCCESS"}),
+    do: true
 
   def ready?(_pr), do: false
 
@@ -423,7 +422,7 @@ defmodule SymphonyElixir.GitHub do
     File.write!(message_file, commit_message(issue))
 
     try do
-      case System.cmd("git", ["commit", "-F", message_file],
+      case System.cmd("git", ["-c", "user.name=Symphony", "-c", "user.email=symphony@agent", "commit", "-F", message_file],
              cd: workspace_path,
              stderr_to_stdout: true
            ) do
