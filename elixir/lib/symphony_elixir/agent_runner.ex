@@ -91,35 +91,42 @@ defmodule SymphonyElixir.AgentRunner do
            runner.run_turn(session, prompt, timeout_ms) do
       Logger.info("Completed agent run for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          persist_artifacts(runner, workspace, refreshed_issue, text)
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      case check_turn_result(runner, text) do
+        :ok ->
+          case continue_with_issue?(issue, issue_state_fetcher) do
+            {:continue, refreshed_issue} when turn_number < max_turns ->
+              persist_artifacts(runner, workspace, refreshed_issue, text)
+              Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
 
-          do_run_codex_turns(
-            runner,
-            session,
-            workspace,
-            refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            turn_number + 1,
-            max_turns
-          )
+              do_run_codex_turns(
+                runner,
+                session,
+                workspace,
+                refreshed_issue,
+                codex_update_recipient,
+                opts,
+                issue_state_fetcher,
+                turn_number + 1,
+                max_turns
+              )
 
-        {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; skipping delivery and returning control to orchestrator")
-          persist_artifacts(runner, workspace, refreshed_issue, text)
+            {:continue, refreshed_issue} ->
+              Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; skipping delivery and returning control to orchestrator")
+              persist_artifacts(runner, workspace, refreshed_issue, text)
 
-          {:error, :max_turns_reached_active_issue}
+              {:error, :max_turns_reached_active_issue}
 
-        {:done, refreshed_issue} ->
-          persist_artifacts(runner, workspace, refreshed_issue, text)
+            {:done, refreshed_issue} ->
+              persist_artifacts(runner, workspace, refreshed_issue, text)
 
-          :ok
+              :ok
+
+            {:error, reason} ->
+              {:error, reason}
+          end
 
         {:error, reason} ->
+          Logger.error("Agent returned error for #{issue_context(issue)}: #{inspect(reason)}")
           {:error, reason}
       end
     end
@@ -137,6 +144,14 @@ defmodule SymphonyElixir.AgentRunner do
     - The original task instructions and prior turn context are already present in this thread, so do not restate them before acting.
     - Focus on the remaining ticket work and do not end the turn while the issue stays active unless you are truly blocked.
     """
+  end
+
+  defp check_turn_result(runner, text) do
+    case runner.parse_result(text) do
+      {:ok, %{status: :error}} -> {:error, :agent_returned_error}
+      {:ok, _result} -> :ok
+      {:error, _reason} -> :ok
+    end
   end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do

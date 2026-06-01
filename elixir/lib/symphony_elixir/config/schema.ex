@@ -353,7 +353,7 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
-  @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
+  @spec resolve_turn_sandbox_policy(t(), Path.t() | nil) :: map()
   def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
     case codex_fallback(settings, :turn_sandbox_policy) do
       %{} = policy ->

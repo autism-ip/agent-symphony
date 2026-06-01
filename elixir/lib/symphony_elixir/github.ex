@@ -277,7 +277,9 @@ defmodule SymphonyElixir.GitHub do
   def ready?(%{merged: true}), do: true
   def ready?(%{state: "MERGED"}), do: true
   def ready?(%{state: "OPEN", mergeable: "CONFLICTING"}), do: false
-  def ready?(%{state: "OPEN", status_check_rollup: "SUCCESS"}), do: true
+  def ready?(%{state: "OPEN", mergeable: mergeable, status_check_rollup: "SUCCESS"})
+      when mergeable in ["MERGEABLE", "UNKNOWN"],
+      do: true
 
   def ready?(_pr), do: false
 
@@ -443,7 +445,7 @@ defmodule SymphonyElixir.GitHub do
     write_cmd = "echo '#{msg}' > #{message_path}"
     commit_cmd = "cd #{workspace_path} && git -c user.name='Symphony' -c user.email='symphony@agent' commit -F #{message_path}"
     clean_cmd = "rm -f #{message_path}"
-    script = "#{write_cmd} && #{commit_cmd}; #{clean_cmd}"
+    script = "#{write_cmd} && #{commit_cmd} && #{clean_cmd} || { #{clean_cmd}; exit 1; }"
 
     case SSH.run(worker_host, script, stderr_to_stdout: true) do
       {:ok, {_output, 0}} ->
@@ -589,7 +591,7 @@ defmodule SymphonyElixir.GitHub do
       "cd #{workspace_path} && gh pr create --title '#{title}' --body-file #{body_path} --base #{base} --head #{branch} --draft"
 
     clean_cmd = "rm -f #{body_path}"
-    script = "#{write_cmd} && #{create_cmd}; #{clean_cmd}"
+    script = "#{write_cmd} && #{create_cmd} && #{clean_cmd} || { #{clean_cmd}; exit 1; }"
 
     case SSH.run(worker_host, script, stderr_to_stdout: true) do
       {:ok, {output, 0}} ->
@@ -700,13 +702,17 @@ defmodule SymphonyElixir.GitHub do
     do: true
 
   defp check_completed_and_successful?(%{"conclusion" => "SUCCESS"}), do: true
+  defp check_completed_and_successful?(%{"state" => "SUCCESS"}), do: true
+  defp check_completed_and_successful?(%{"conclusion" => conclusion}) when conclusion in ["SKIPPED", "NEUTRAL"], do: true
   defp check_completed_and_successful?(_), do: false
 
-  defp check_failed?(%{"conclusion" => conclusion}) when conclusion in ["FAILURE", "TIMED_OUT", "CANCELLED"],
+  @failure_conclusions ~w(FAILURE TIMED_OUT CANCELLED ACTION_REQUIRED STALE STARTUP_FAILURE)
+
+  defp check_failed?(%{"conclusion" => conclusion}) when conclusion in @failure_conclusions,
     do: true
 
   defp check_failed?(%{"status" => "COMPLETED", "conclusion" => conclusion})
-       when conclusion in ["FAILURE", "TIMED_OUT", "CANCELLED"],
+       when conclusion in @failure_conclusions,
        do: true
 
   defp check_failed?(_), do: false
