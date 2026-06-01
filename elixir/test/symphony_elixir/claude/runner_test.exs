@@ -126,6 +126,35 @@ defmodule SymphonyElixir.Claude.RunnerTest do
       assert updated_session.session_id == "sess_abc"
     end
 
+    test "SSH path redirects stdin to /dev/null and uses SSH.ssh_args" do
+      prompt = "Fix the bug"
+      timeout_ms = 30_000
+      ndjson_output = "{\"type\":\"result\",\"result\":\"done\",\"session_id\":\"s1\"}\n"
+
+      session = %{
+        workspace: "/tmp/ws",
+        issue_id: "1",
+        issue_title: "t",
+        command: "claude",
+        worker_host: "worker-1",
+        max_turns: 10,
+        session_id: nil,
+        cmd_fn: fn command, args, _opts ->
+          assert command == "ssh"
+          # SSH.ssh_args wraps the remote script in bash -lc '...'
+          # The last arg is the remote shell command
+          remote_cmd = List.last(args)
+          assert remote_cmd =~ "bash -lc"
+          assert remote_cmd =~ "</dev/null"
+          assert remote_cmd =~ "claude"
+
+          {ndjson_output, 0}
+        end
+      }
+
+      assert {:ok, _output, _updated_session} = Runner.run_turn(session, prompt, timeout_ms)
+    end
+
     test "passes --resume on subsequent turns when session_id is present" do
       ndjson_output = "{\"type\":\"result\",\"result\":\"continued\",\"session_id\":\"sess_abc\",\"total_cost_usd\":0.02}\n"
 

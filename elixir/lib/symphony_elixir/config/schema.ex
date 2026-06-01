@@ -423,7 +423,7 @@ defmodule SymphonyElixir.Config.Schema do
   # Command injection prevention
   # -----------------------------------------------------------------------
 
-  @shell_metacharacters ~r/[;|&`$(){}]/
+  @shell_metacharacters ~r/[;|&`$(){}\n><!#\\]/
 
   @spec validate_no_shell_metacharacters(Ecto.Changeset.t(), atom()) :: Ecto.Changeset.t()
   def validate_no_shell_metacharacters(changeset, field) do
@@ -662,7 +662,11 @@ defmodule SymphonyElixir.Config.Schema do
         claude.stall_timeout_ms
 
       %{type: "codex", codex: codex} ->
-        codex.stall_timeout_ms
+        # Respect legacy top-level codex.stall_timeout_ms when runner value
+        # is still the Ecto default — same logic as codex_fallback/2.
+        if codex.stall_timeout_ms != default_codex_value(:stall_timeout_ms),
+          do: codex.stall_timeout_ms,
+          else: settings.codex.stall_timeout_ms
 
       _ ->
         settings.codex.stall_timeout_ms

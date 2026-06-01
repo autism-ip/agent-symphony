@@ -314,4 +314,40 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
       assert settings.runner.codex.stall_timeout_ms == 300_000
     end
   end
+
+  # ===========================================================================
+  # Schema.stall_timeout_ms/1 — legacy fallback
+  # ===========================================================================
+
+  describe "Schema.stall_timeout_ms/1" do
+    test "falls back to top-level codex.stall_timeout_ms when runner value is default" do
+      # Legacy config: top-level codex with custom stall timeout, migrated to runner
+      config = %{"codex" => %{"stall_timeout_ms" => 600_000}}
+      {:ok, settings} = Schema.parse(config)
+
+      # runner.codex.stall_timeout_ms is the Ecto default (300_000),
+      # but top-level codex.stall_timeout_ms is 600_000.
+      assert Schema.stall_timeout_ms(settings) == 600_000
+    end
+
+    test "uses runner codex value when explicitly set" do
+      config = %{
+        "runner" => %{"type" => "codex", "codex" => %{"stall_timeout_ms" => 900_000}},
+        "codex" => %{"stall_timeout_ms" => 600_000}
+      }
+
+      {:ok, settings} = Schema.parse(config)
+      assert Schema.stall_timeout_ms(settings) == 900_000
+    end
+
+    test "Claude stall timeout is independent from Codex" do
+      config = %{
+        "runner" => %{"type" => "claude", "claude" => %{"stall_timeout_ms" => 120_000}},
+        "codex" => %{"stall_timeout_ms" => 600_000}
+      }
+
+      {:ok, settings} = Schema.parse(config)
+      assert Schema.stall_timeout_ms(settings) == 120_000
+    end
+  end
 end

@@ -136,7 +136,7 @@ defmodule SymphonyElixir.Claude.Runner do
         # Don't shell_escape the command itself — multi-word commands like
         # "mise exec -- claude" must pass through verbatim.
         local_cmd = build_local_command(session.command, cli_args)
-        remote_script = "cd #{shell_escape(session.workspace)} && #{local_cmd}"
+        remote_script = "cd #{shell_escape(session.workspace)} && #{local_cmd} </dev/null"
         ssh_args = SSH.ssh_args(host, remote_script)
         {:ssh, "ssh", ssh_args}
 
