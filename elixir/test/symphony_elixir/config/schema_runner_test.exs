@@ -252,11 +252,11 @@ defmodule SymphonyElixir.Config.SchemaRunnerTest do
     end
 
     @tag :pending
-    test "ClaudeConfig: stall_timeout_ms defaults to 60_000" do
+    test "ClaudeConfig: stall_timeout_ms defaults to 0 (disabled)" do
       config = %{"runner" => %{"type" => "claude", "claude" => %{}}}
 
       assert {:ok, %Schema{} = settings} = Schema.parse(config)
-      assert settings.runner.claude.stall_timeout_ms == 60_000
+      assert settings.runner.claude.stall_timeout_ms == 0
     end
 
     @tag :pending

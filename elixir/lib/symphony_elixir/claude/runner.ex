@@ -133,16 +133,21 @@ defmodule SymphonyElixir.Claude.Runner do
     case session.worker_host do
       host when is_binary(host) and host != "" ->
         # SSH path: use SSH.ssh_args/2 for host:port parsing, config, -T flag.
-        local_cmd = build_local_command(shell_escape(session.command), cli_args)
+        # Don't shell_escape the command itself — multi-word commands like
+        # "mise exec -- claude" must pass through verbatim.
+        local_cmd = build_local_command(session.command, cli_args)
         remote_script = "cd #{shell_escape(session.workspace)} && #{local_cmd}"
         ssh_args = SSH.ssh_args(host, remote_script)
         {:ssh, "ssh", ssh_args}
 
       _ ->
-        # Embed command directly in shell script so multi-word commands
-        # (e.g. "mise exec -- claude") work. stdin is redirected to /dev/null
-        # to prevent BEAM port pipe from blocking CLI reads.
-        {:local, "/bin/sh", ["-c", "#{session.command} </dev/null" | cli_args]}
+        # Embed ALL args inside the -c script string so they reach the
+        # command as real arguments, not as /bin/sh positional parameters.
+        # stdin is redirected to /dev/null to prevent BEAM port pipe from
+        # blocking CLI reads.
+        escaped_args = Enum.map_join(cli_args, " ", &shell_escape/1)
+        script = "#{session.command} #{escaped_args} </dev/null"
+        {:local, "/bin/sh", ["-c", script]}
     end
   end
 
