@@ -1342,6 +1342,7 @@ defmodule SymphonyElixir.CoreTest do
       assert_raise RuntimeError, ~r/delivery_failed/, fn ->
         AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
       end
+
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 

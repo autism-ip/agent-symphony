@@ -278,6 +278,7 @@ defmodule SymphonyElixir.GitHub do
   def ready?(%{merged: true}), do: true
   def ready?(%{state: "MERGED"}), do: true
   def ready?(%{state: "OPEN", mergeable: "CONFLICTING"}), do: false
+
   def ready?(%{state: "OPEN", mergeable: "MERGEABLE", status_check_rollup: "SUCCESS"}),
     do: true
 
@@ -550,7 +551,7 @@ defmodule SymphonyElixir.GitHub do
     try do
       base = detect_default_branch(nil, workspace_path)
 
-    case System.cmd(
+      case System.cmd(
              "gh",
              [
                "pr",
