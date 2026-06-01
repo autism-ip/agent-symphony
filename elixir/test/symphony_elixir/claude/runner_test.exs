@@ -97,17 +97,21 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         session_id: nil,
         cmd_fn: fn command, args, opts ->
           assert command == "/bin/sh"
-          assert ["-c", "claude </dev/null" | claude_args] = args
-          assert "-p" in claude_args
-          assert prompt in claude_args
-          assert "--dangerously-skip-permissions" in claude_args
-          assert "--verbose" in claude_args
-          assert "--output-format" in claude_args
-          assert "stream-json" in claude_args
-          assert "--max-turns" in claude_args
-          assert "--settings" in claude_args
-          assert %{"disableAllHooks" => true} = decode_settings_arg(claude_args)
-          refute "--resume" in claude_args
+          # All CLI args are embedded inside the -c script string, not as
+          # separate positional parameters to /bin/sh.
+          assert ["-c", script] = args
+          assert script =~ "claude"
+          assert script =~ "-p"
+          assert script =~ "Implement factorial function"
+          assert script =~ "--dangerously-skip-permissions"
+          assert script =~ "--verbose"
+          assert script =~ "--output-format"
+          assert script =~ "stream-json"
+          assert script =~ "--max-turns"
+          assert script =~ "--settings"
+          assert script =~ ~s("disableAllHooks":true)
+          refute script =~ "--resume"
+          assert String.contains?(script, "/dev/null")
           assert Keyword.get(opts, :cd) == "/tmp/ws"
           assert {"CLAUDECODE", nil} in Keyword.fetch!(opts, :env)
           assert {"CLAUDE_CODE_ENTRYPOINT", nil} in Keyword.fetch!(opts, :env)
@@ -134,9 +138,9 @@ defmodule SymphonyElixir.Claude.RunnerTest do
         max_turns: 10,
         session_id: "sess_abc",
         cmd_fn: fn _command, args, _opts ->
-          assert ["-c", "claude </dev/null" | claude_args] = args
-          assert "--resume" in claude_args
-          assert "sess_abc" in claude_args
+          assert ["-c", script] = args
+          assert script =~ "--resume"
+          assert script =~ "sess_abc"
 
           {ndjson_output, 0}
         end
@@ -236,9 +240,4 @@ defmodule SymphonyElixir.Claude.RunnerTest do
     end
   end
 
-  defp decode_settings_arg(args) do
-    index = Enum.find_index(args, &(&1 == "--settings"))
-    assert is_integer(index)
-    args |> Enum.at(index + 1) |> Jason.decode!()
-  end
 end
