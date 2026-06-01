@@ -271,7 +271,11 @@ defmodule SymphonyElixir.Config.Schema do
     embedded_schema do
       field(:command, :string, default: "claude")
       field(:turn_timeout_ms, :integer, default: 300_000)
-      field(:stall_timeout_ms, :integer, default: 60_000)
+      # Claude runs synchronously via System.cmd — no heartbeats are sent
+      # during execution, so stall detection would false-positive on any
+      # turn longer than the timeout.  Disable by default; the per-turn
+      # timeout (turn_timeout_ms) already protects against hung processes.
+      field(:stall_timeout_ms, :integer, default: 0)
       field(:max_turns, :integer, default: 10)
     end
 
