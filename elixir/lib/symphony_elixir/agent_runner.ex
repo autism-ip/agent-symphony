@@ -267,10 +267,13 @@ defmodule SymphonyElixir.AgentRunner do
   defp attempt_delivery(%Issue{} = issue, workspace, worker_host, recipient) do
     if worker_host do
       Logger.warning("Skipping delivery for #{issue_context(issue)}: remote worker_host=#{worker_host} not supported yet")
-      :ok
     else
       do_attempt_delivery(issue, workspace, recipient)
     end
+
+    # Delivery is best-effort: always return :ok so the agent run succeeds
+    # regardless of delivery outcome. Failures are logged above.
+    :ok
   end
 
   defp do_attempt_delivery(%Issue{} = issue, workspace, recipient) do
@@ -288,7 +291,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.warning("Delivery failed for #{issue_context(issue)}: #{inspect(reason)}")
-        :ok
+        {:error, reason}
     end
   end
 

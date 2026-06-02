@@ -403,15 +403,20 @@ defmodule SymphonyElixir.Orchestrator do
 
         mergeable = Map.get(pr_info, :mergeable, "UNKNOWN")
         merged = Map.get(pr_info, :merged, false)
+        draft = Map.get(pr_info, :is_draft, false)
 
         cond do
           merged ->
             Logger.info("PR merged for issue_id=#{issue_id} pr_url=#{entry.pr_url}; dropping tracking")
             %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
 
-          rollup == "SUCCESS" and mergeable == "MERGEABLE" ->
+          rollup == "SUCCESS" and mergeable == "MERGEABLE" and not draft ->
             Logger.info("PR ready for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
             %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
+
+          rollup == "SUCCESS" and draft ->
+            Logger.info("PR checks pass but still draft for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
+            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
 
           rollup == "SUCCESS" ->
             Logger.warning("PR checks pass but not mergeable (#{mergeable}) for issue_id=#{issue_id} pr_url=#{entry.pr_url}")

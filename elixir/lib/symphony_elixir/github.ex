@@ -260,7 +260,7 @@ defmodule SymphonyElixir.GitHub do
            "--repo",
            repo,
            "--json",
-           "url,state,mergeable,statusCheckRollup,merged,number"
+           "url,state,mergeable,statusCheckRollup,merged,number,isDraft"
          ]) do
       {:ok, output} ->
         parse_pr_view(output)
@@ -352,7 +352,10 @@ defmodule SymphonyElixir.GitHub do
 
   @spec git_fetch_branch(String.t(), Path.t()) :: :ok | {:error, delivery_error()}
   defp git_fetch_branch(branch, workspace_path) do
-    case System.cmd("git", ["fetch", "origin", branch],
+    # Use refspec to create origin/<branch> tracking ref, not just FETCH_HEAD
+    refspec = "+refs/heads/#{branch}:refs/remotes/origin/#{branch}"
+
+    case System.cmd("git", ["fetch", "origin", refspec],
            cd: workspace_path,
            stderr_to_stdout: true
          ) do
@@ -636,6 +639,7 @@ defmodule SymphonyElixir.GitHub do
            mergeable: pr["mergeable"] || "UNKNOWN",
            status_check_rollup: normalize_check_rollup(pr["statusCheckRollup"]),
            merged: pr["merged"] || false,
+           is_draft: pr["isDraft"] || false,
            number: pr["number"]
          }}
 
