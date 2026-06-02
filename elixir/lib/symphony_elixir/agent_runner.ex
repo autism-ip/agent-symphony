@@ -37,6 +37,9 @@ defmodule SymphonyElixir.AgentRunner do
             with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host),
                  :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
               :ok
+            else
+              {:ok, :max_turns} -> {:ok, :max_turns}
+              error -> error
             end
           after
             Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -44,6 +47,9 @@ defmodule SymphonyElixir.AgentRunner do
 
         case run_result do
           :ok -> attempt_delivery(issue, workspace, worker_host)
+          {:ok, :max_turns} ->
+            Logger.info("Deferring delivery for #{issue_context(issue)}: max_turns exhausted")
+            :ok
           error -> error
         end
 
@@ -109,10 +115,10 @@ defmodule SymphonyElixir.AgentRunner do
           )
 
         {:continue, refreshed_issue} ->
-          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; returning control to orchestrator")
+          Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active; deferring delivery")
           persist_artifacts(runner, workspace, refreshed_issue, text)
 
-          :ok
+          {:ok, :max_turns}
 
         {:done, refreshed_issue} ->
           persist_artifacts(runner, workspace, refreshed_issue, text)
@@ -254,7 +260,8 @@ defmodule SymphonyElixir.AgentRunner do
   # GitHub delivery (best-effort, post-run)
   # ------------------------------------------------------------------
 
-  defp attempt_delivery(%Issue{} = issue, workspace, _worker_host) do
+  defp attempt_delivery(%Issue{} = issue, workspace, worker_host) do
+    Logger.info("Attempting delivery for #{issue_context(issue)} worker_host=#{worker_host}")
     case GitHub.deliver(issue, workspace) do
       {:ok, delivery} ->
         Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")

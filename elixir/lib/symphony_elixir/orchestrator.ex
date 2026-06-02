@@ -401,10 +401,16 @@ defmodule SymphonyElixir.Orchestrator do
           |> Map.put(:status_check_rollup, rollup)
           |> Map.put(:pr_info, pr_info)
 
+        mergeable = Map.get(pr_info, :mergeable, "UNKNOWN")
+
         case rollup do
-          "SUCCESS" ->
+          "SUCCESS" when mergeable != "CONFLICTING" ->
             Logger.info("PR ready for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
             %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
+
+          "SUCCESS" ->
+            Logger.warning("PR checks pass but has conflicts for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
+            %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
 
           "FAILURE" ->
             Logger.warning("PR checks failed for issue_id=#{issue_id} pr_url=#{entry.pr_url}")

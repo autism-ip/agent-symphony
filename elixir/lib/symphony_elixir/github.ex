@@ -65,6 +65,12 @@ defmodule SymphonyElixir.GitHub do
         has_unpushed ->
           deliver_push_and_pr(issue, branch, workspace_path)
 
+        !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+          Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
+          {:ok, pr_number, pr_url} = find_or_create_pr(issue, branch, workspace_path)
+          {:ok, commit_sha} = get_head_sha(workspace_path)
+          {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+
         true ->
           {:error, :no_changes}
       end
@@ -410,6 +416,18 @@ defmodule SymphonyElixir.GitHub do
          ) do
       {"", 0} -> false
       {_output, 0} -> true
+      # Remote branch doesn't exist yet — but only if the remote itself is configured
+      _ -> remote_branch_missing?(branch, workspace_path)
+    end
+  end
+
+  @spec remote_branch_missing?(String.t(), Path.t()) :: boolean()
+  defp remote_branch_missing?(branch, workspace_path) do
+    case System.cmd("git", ["remote", "get-url", "origin"],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {_url, 0} -> !remote_branch_exists?(branch, workspace_path)
       _ -> false
     end
   end
@@ -442,9 +460,9 @@ defmodule SymphonyElixir.GitHub do
              "--head",
              branch,
              "--state",
-             "open",
+             "all",
              "--json",
-             "number,url",
+             "number,url,state",
              "--limit",
              "1"
            ],
@@ -579,7 +597,7 @@ defmodule SymphonyElixir.GitHub do
   defp normalize_check_rollup(checks) when is_list(checks) do
     cond do
       checks == [] ->
-        "SUCCESS"
+        "PENDING"
 
       Enum.all?(checks, &check_completed_and_successful?(&1)) ->
         "SUCCESS"
@@ -603,11 +621,8 @@ defmodule SymphonyElixir.GitHub do
   defp check_completed_and_successful?(%{"conclusion" => "SUCCESS"}), do: true
   defp check_completed_and_successful?(_), do: false
 
-  defp check_failed?(%{"conclusion" => conclusion}) when conclusion in ["FAILURE", "TIMED_OUT", "CANCELLED"],
-    do: true
-
-  defp check_failed?(%{"status" => "COMPLETED", "conclusion" => conclusion})
-       when conclusion in ["FAILURE", "TIMED_OUT", "CANCELLED"],
+  defp check_failed?(%{"conclusion" => conclusion})
+       when conclusion in ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE"],
        do: true
 
   defp check_failed?(_), do: false
@@ -629,6 +644,26 @@ defmodule SymphonyElixir.GitHub do
     case System.cmd("git", ["status", "--porcelain"], cd: workspace_path, stderr_to_stdout: true) do
       {"", 0} -> false
       _ -> true
+    end
+  end
+
+  @spec has_pr?(String.t(), Path.t()) :: boolean()
+  defp has_pr?(branch, workspace_path) do
+    case detect_existing_pr(branch, workspace_path) do
+      {:ok, _number, _url} -> true
+      :no_pr -> false
+    end
+  end
+
+  @spec remote_branch_exists?(String.t(), Path.t()) :: boolean()
+  defp remote_branch_exists?(branch, workspace_path) do
+    case System.cmd("git", ["ls-remote", "--heads", "origin", branch],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {"", 0} -> false
+      {_output, 0} -> true
+      _ -> false
     end
   end
 
