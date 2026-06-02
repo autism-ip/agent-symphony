@@ -54,32 +54,38 @@ defmodule SymphonyElixir.GitHub do
   """
   @spec deliver(Issue.t(), Path.t()) :: {:ok, delivery_result()} | {:error, delivery_error()}
   def deliver(%Issue{} = issue, workspace_path) when is_binary(workspace_path) do
-    with :ok <- verify_gh_available() do
-      branch = branch_name(issue)
-      has_dirty = has_dirty_files?(workspace_path)
-      has_unpushed = has_unpushed_commits?(branch, workspace_path)
+    # Check for changes first — a clean workspace is a no-op that does not need gh.
+    has_dirty = has_dirty_files?(workspace_path)
 
-      cond do
-        has_dirty ->
-          deliver_full_pipeline(issue, branch, workspace_path)
+    if not has_dirty and not has_unpushed_commits?(branch_name(issue), workspace_path) do
+      {:error, :no_changes}
+    else
+      with :ok <- verify_gh_available() do
+        branch = current_branch_or_fallback(issue, workspace_path)
+        has_unpushed = has_unpushed_commits?(branch, workspace_path)
 
-        has_unpushed ->
-          deliver_push_and_pr(issue, branch, workspace_path)
+        cond do
+          has_dirty ->
+            deliver_full_pipeline(issue, branch, workspace_path)
 
-        !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
-          Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
+          has_unpushed ->
+            deliver_push_and_pr(issue, branch, workspace_path)
 
-          case find_or_create_pr(issue, branch, workspace_path) do
-            {:ok, pr_number, pr_url} ->
-              {:ok, commit_sha} = get_head_sha(workspace_path)
-              {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+          !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+            Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
 
-            {:error, reason} ->
-              {:error, reason}
-          end
+            case find_or_create_pr(issue, branch, workspace_path) do
+              {:ok, pr_number, pr_url} ->
+                {:ok, commit_sha} = get_head_sha(workspace_path)
+                {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
 
-        true ->
-          {:error, :no_changes}
+              {:error, reason} ->
+                {:error, reason}
+            end
+
+          true ->
+            {:error, :no_changes}
+        end
       end
     end
   end
@@ -142,6 +148,14 @@ defmodule SymphonyElixir.GitHub do
   end
 
   def branch_name(_issue), do: "symphony/unknown-issue"
+
+  # Use the actual workspace branch if available, fall back to generated name.
+  defp current_branch_or_fallback(issue, workspace_path) do
+    case current_branch(workspace_path) do
+      {:ok, branch} -> branch
+      :error -> branch_name(issue)
+    end
+  end
 
   # -------------------------------------------------------------------
   # Commit message
@@ -277,6 +291,7 @@ defmodule SymphonyElixir.GitHub do
   @spec ready?(pr_status()) :: boolean()
   def ready?(%{merged: true}), do: true
   def ready?(%{state: "MERGED"}), do: true
+  def ready?(%{state: "OPEN", is_draft: true}), do: false
   def ready?(%{state: "OPEN", mergeable: "CONFLICTING"}), do: false
   def ready?(%{state: "OPEN", mergeable: "MERGEABLE", status_check_rollup: "SUCCESS"}), do: true
 
@@ -728,6 +743,8 @@ defmodule SymphonyElixir.GitHub do
       {"", 0} -> false
       _ -> true
     end
+  rescue
+    _ -> true
   end
 
   @spec has_pr?(String.t(), Path.t()) :: boolean()
