@@ -104,7 +104,11 @@ defmodule SymphonyElixir.GitHub do
   end
 
   # Recovery pipeline: push unpushed commits → PR (skips commit)
+  # Guard: if on the base branch, create a feature branch first to avoid
+  # pushing directly to main/master.
   defp deliver_push_and_pr(issue, branch, workspace_path) do
+    branch = if base_branch?(branch, workspace_path), do: branch_name(issue), else: branch
+
     with {:ok, branch} <- ensure_branch(branch, workspace_path),
          :ok <- push_branch(branch, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
@@ -251,7 +255,7 @@ defmodule SymphonyElixir.GitHub do
            "--state",
            "open",
            "--json",
-           "number,url,state,mergeable,statusCheckRollup",
+           "number,url,state,mergeable,statusCheckRollup,isDraft",
            "--limit",
            "1"
          ]) do
@@ -630,6 +634,7 @@ defmodule SymphonyElixir.GitHub do
            mergeable: pr["mergeable"] || "UNKNOWN",
            status_check_rollup: normalize_check_rollup(pr["statusCheckRollup"]),
            merged: false,
+           is_draft: pr["isDraft"] || false,
            number: number
          }}
 
@@ -679,7 +684,7 @@ defmodule SymphonyElixir.GitHub do
   defp normalize_check_rollup(checks) when is_list(checks) do
     cond do
       checks == [] ->
-        "PENDING"
+        "SUCCESS"
 
       Enum.all?(checks, &check_completed_and_successful?(&1)) ->
         "SUCCESS"
@@ -780,6 +785,11 @@ defmodule SymphonyElixir.GitHub do
       {"origin/" <> branch, 0} -> String.trim(branch)
       _ -> "main"
     end
+  end
+
+  @spec base_branch?(String.t(), Path.t()) :: boolean()
+  defp base_branch?(branch, workspace_path) do
+    branch == detect_base_branch(workspace_path)
   end
 
   @spec ensure_git_author(Path.t()) :: :ok

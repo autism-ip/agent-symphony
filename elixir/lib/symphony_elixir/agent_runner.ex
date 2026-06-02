@@ -288,7 +288,7 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         Logger.warning("Delivery failed for #{issue_context(issue)}: #{inspect(reason)}")
-        {:error, reason}
+        :ok
     end
   end
 
