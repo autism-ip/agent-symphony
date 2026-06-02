@@ -54,37 +54,42 @@ defmodule SymphonyElixir.GitHub do
   """
   @spec deliver(Issue.t(), Path.t()) :: {:ok, delivery_result()} | {:error, delivery_error()}
   def deliver(%Issue{} = issue, workspace_path) when is_binary(workspace_path) do
-    # Check for changes first — a clean workspace is a no-op that does not need gh.
-    has_dirty = has_dirty_files?(workspace_path)
-
-    if not has_dirty and not has_unpushed_commits?(branch_name(issue), workspace_path) do
+    # A non-git workspace has nothing to deliver.
+    if not git_repo?(workspace_path) do
       {:error, :no_changes}
     else
-      with :ok <- verify_gh_available() do
-        branch = current_branch_or_fallback(issue, workspace_path)
-        has_unpushed = has_unpushed_commits?(branch, workspace_path)
+      # Check for changes first — a clean workspace is a no-op that does not need gh.
+      has_dirty = has_dirty_files?(workspace_path)
 
-        cond do
-          has_dirty ->
-            deliver_full_pipeline(issue, branch, workspace_path)
+      if not has_dirty and not has_unpushed_commits?(branch_name(issue), workspace_path) do
+        {:error, :no_changes}
+      else
+        with :ok <- verify_gh_available() do
+          branch = current_branch_or_fallback(issue, workspace_path)
+          has_unpushed = has_unpushed_commits?(branch, workspace_path)
 
-          has_unpushed ->
-            deliver_push_and_pr(issue, branch, workspace_path)
+          cond do
+            has_dirty ->
+              deliver_full_pipeline(issue, branch, workspace_path)
 
-          !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
-            Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
+            has_unpushed ->
+              deliver_push_and_pr(issue, branch, workspace_path)
 
-            case find_or_create_pr(issue, branch, workspace_path) do
-              {:ok, pr_number, pr_url} ->
-                {:ok, commit_sha} = get_head_sha(workspace_path)
-                {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+            !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+              Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
 
-              {:error, reason} ->
-                {:error, reason}
-            end
+              case find_or_create_pr(issue, branch, workspace_path) do
+                {:ok, pr_number, pr_url} ->
+                  {:ok, commit_sha} = get_head_sha(workspace_path)
+                  {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
 
-          true ->
-            {:error, :no_changes}
+                {:error, reason} ->
+                  {:error, reason}
+              end
+
+            true ->
+              {:error, :no_changes}
+          end
         end
       end
     end
@@ -585,9 +590,7 @@ defmodule SymphonyElixir.GitHub do
                detect_base_branch(workspace_path),
                "--head",
                branch,
-               "--draft",
-               "--label",
-               "symphony"
+               "--draft"
              ],
              cd: workspace_path,
              stderr_to_stdout: true
@@ -738,6 +741,11 @@ defmodule SymphonyElixir.GitHub do
   end
 
   @spec has_dirty_files?(Path.t()) :: boolean()
+  defp git_repo?(workspace_path) do
+    # Check filesystem directly — does not require git binary in PATH.
+    File.dir?(Path.join(workspace_path, ".git"))
+  end
+
   defp has_dirty_files?(workspace_path) do
     case System.cmd("git", ["status", "--porcelain"], cd: workspace_path, stderr_to_stdout: true) do
       {"", 0} -> false
