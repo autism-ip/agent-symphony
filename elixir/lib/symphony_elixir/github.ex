@@ -62,19 +62,21 @@ defmodule SymphonyElixir.GitHub do
   end
 
   defp deliver_in_repo(issue, workspace_path) do
-    with :ok <- verify_gh_available() do
-      branch = current_branch_or_fallback(issue, workspace_path)
-      branch = if branch_has_closed_pr?(branch, workspace_path), do: branch_name(issue), else: branch
-      has_dirty = has_dirty_files?(workspace_path)
+    branch = current_branch_or_fallback(issue, workspace_path)
+    branch = if branch_has_closed_pr?(branch, workspace_path), do: branch_name(issue), else: branch
+    has_dirty = has_dirty_files?(workspace_path)
 
-      cond do
-        has_dirty ->
-          deliver_full_pipeline(issue, branch, workspace_path)
+    cond do
+      has_dirty ->
+        with :ok <- verify_gh_available(),
+             do: deliver_full_pipeline(issue, branch, workspace_path)
 
-        has_unpushed_commits?(branch, workspace_path) ->
-          deliver_push_and_pr(issue, branch, workspace_path)
+      has_unpushed_commits?(branch, workspace_path) ->
+        with :ok <- verify_gh_available(),
+             do: deliver_push_and_pr(issue, branch, workspace_path)
 
-        !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+      !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+        with :ok <- verify_gh_available() do
           Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
 
           case find_or_create_pr(issue, branch, workspace_path) do
@@ -85,17 +87,17 @@ defmodule SymphonyElixir.GitHub do
             {:error, reason} ->
               {:error, reason}
           end
+        end
 
-        true ->
-          {:error, :no_changes}
-      end
+      true ->
+        {:error, :no_changes}
     end
   end
 
   # Full pipeline: branch → commit → push → PR
   defp deliver_full_pipeline(issue, branch, workspace_path) do
     with :ok <- ensure_git_author(workspace_path),
-         {:ok, branch} <- create_branch(issue, workspace_path),
+         {:ok, branch} <- ensure_branch(branch, workspace_path),
          :ok <- commit_changes(issue, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
          :ok <- push_branch(branch, workspace_path),
@@ -161,6 +163,8 @@ defmodule SymphonyElixir.GitHub do
       {:ok, branch} -> branch
       :error -> branch_name(issue)
     end
+  rescue
+    _ -> branch_name(issue)
   end
 
   # -------------------------------------------------------------------
@@ -319,27 +323,48 @@ defmodule SymphonyElixir.GitHub do
 
   defp commit_subject(_issue), do: "symphony: implement changes"
 
-  @spec create_branch(Issue.t(), Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
-  defp create_branch(%Issue{} = issue, workspace_path) do
-    branch = branch_name(issue)
-
+  # -------------------------------------------------------------------
+  # Branch naming
+  # -------------------------------------------------------------------
+  defp ensure_branch(branch, workspace_path) do
     case current_branch(workspace_path) do
       {:ok, ^branch} ->
         Logger.info("Already on branch: #{branch}")
         {:ok, branch}
 
       _ ->
-        ensure_branch(branch, workspace_path)
+        # Recovery case: we may have unpushed commits on the current branch.
+        # Create new branch at HEAD (preserving commits) instead of fetching
+        # remote, which would discard local-only work.
+        case System.cmd("git", ["checkout", "-b", branch],
+               cd: workspace_path,
+               stderr_to_stdout: true
+             ) do
+          {_output, 0} ->
+            Logger.info("Created branch: #{branch}")
+            {:ok, branch}
+
+          # Branch already exists locally — switch to it
+          {_output, _status} ->
+            switch_to_existing_branch_with_remote_fallback(branch, workspace_path)
+        end
     end
   end
 
-  @spec ensure_branch(String.t(), Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
-  defp ensure_branch(branch, workspace_path) do
-    # If the remote branch exists, track it instead of creating a divergent local branch
-    if remote_branch_exists?(branch, workspace_path) do
-      fetch_and_checkout_remote(branch, workspace_path)
-    else
-      create_local_branch(branch, workspace_path)
+  @spec switch_to_existing_branch_with_remote_fallback(String.t(), Path.t()) ::
+          {:ok, String.t()} | {:error, delivery_error()}
+  defp switch_to_existing_branch_with_remote_fallback(branch, workspace_path) do
+    case System.cmd("git", ["checkout", branch],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        Logger.info("Switched to existing branch: #{branch}")
+        {:ok, branch}
+
+      # Local checkout failed — fall back to tracking remote
+      {_output, _status} ->
+        fetch_and_checkout_remote(branch, workspace_path)
     end
   end
 
@@ -383,38 +408,6 @@ defmodule SymphonyElixir.GitHub do
          ) do
       {_output, 0} -> :ok
       {output, _status} -> {:error, {:branch_failed, "fetch failed: #{String.trim(output)}"}}
-    end
-  end
-
-  @spec create_local_branch(String.t(), Path.t()) ::
-          {:ok, String.t()} | {:error, delivery_error()}
-  defp create_local_branch(branch, workspace_path) do
-    case System.cmd("git", ["checkout", "-b", branch],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
-        Logger.info("Created branch: #{branch}")
-        {:ok, branch}
-
-      {_output, _status} ->
-        switch_to_existing_branch(branch, workspace_path)
-    end
-  end
-
-  @spec switch_to_existing_branch(String.t(), Path.t()) ::
-          {:ok, String.t()} | {:error, delivery_error()}
-  defp switch_to_existing_branch(branch, workspace_path) do
-    case System.cmd("git", ["checkout", branch],
-           cd: workspace_path,
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
-        Logger.info("Switched to existing branch: #{branch}")
-        {:ok, branch}
-
-      {output, _status} ->
-        {:error, {:branch_failed, String.trim(output)}}
     end
   end
 
@@ -588,6 +581,8 @@ defmodule SymphonyElixir.GitHub do
       _ ->
         false
     end
+  rescue
+    _ -> false
   end
 
   @spec create_draft_pr(Issue.t(), String.t(), Path.t()) ::
