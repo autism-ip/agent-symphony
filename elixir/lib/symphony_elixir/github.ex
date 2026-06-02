@@ -39,6 +39,7 @@ defmodule SymphonyElixir.GitHub do
           mergeable: String.t(),
           status_check_rollup: String.t(),
           merged: boolean(),
+          is_draft: boolean(),
           number: integer()
         }
 
