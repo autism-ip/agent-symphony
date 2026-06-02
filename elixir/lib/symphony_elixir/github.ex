@@ -68,6 +68,9 @@ defmodule SymphonyElixir.GitHub do
 
     cond do
       has_dirty ->
+        # Don't commit dirty work directly on the base branch
+        branch = if base_branch?(branch, workspace_path), do: branch_name(issue), else: branch
+
         with :ok <- verify_gh_available(),
              do: deliver_full_pipeline(issue, branch, workspace_path)
 
@@ -75,18 +78,16 @@ defmodule SymphonyElixir.GitHub do
         with :ok <- verify_gh_available(),
              do: deliver_push_and_pr(issue, branch, workspace_path)
 
-      !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
-        with :ok <- verify_gh_available() do
-          Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
+      gh_available?() && !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+        Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
 
-          case find_or_create_pr(issue, branch, workspace_path) do
-            {:ok, pr_number, pr_url} ->
-              {:ok, commit_sha} = get_head_sha(workspace_path)
-              {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+        case find_or_create_pr(issue, branch, workspace_path) do
+          {:ok, pr_number, pr_url} ->
+            {:ok, commit_sha} = get_head_sha(workspace_path)
+            {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
 
-            {:error, reason} ->
-              {:error, reason}
-          end
+          {:error, reason} ->
+            {:error, reason}
         end
 
       true ->
@@ -752,10 +753,12 @@ defmodule SymphonyElixir.GitHub do
 
   @spec verify_gh_available() :: :ok | {:error, :gh_not_available}
   defp verify_gh_available do
-    case System.find_executable("gh") do
-      nil -> {:error, :gh_not_available}
-      _path -> :ok
-    end
+    if gh_available?(), do: :ok, else: {:error, :gh_not_available}
+  end
+
+  @spec gh_available?() :: boolean()
+  defp gh_available? do
+    not is_nil(System.find_executable("gh"))
   end
 
   @spec has_dirty_files?(Path.t()) :: boolean()
@@ -807,6 +810,8 @@ defmodule SymphonyElixir.GitHub do
   @spec base_branch?(String.t(), Path.t()) :: boolean()
   defp base_branch?(branch, workspace_path) do
     branch == detect_base_branch(workspace_path)
+  rescue
+    _ -> false
   end
 
   @spec ensure_git_author(Path.t()) :: :ok
