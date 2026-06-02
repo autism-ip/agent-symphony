@@ -325,7 +325,7 @@ defmodule SymphonyElixir.GitHub do
           {:ok, String.t()} | {:error, delivery_error()}
   defp fetch_and_checkout_remote(branch, workspace_path) do
     with :ok <- git_fetch_branch(branch, workspace_path) do
-      case System.cmd("git", ["checkout", branch],
+      case System.cmd("git", ["checkout", "-b", branch, "--track", "origin/#{branch}"],
              cd: workspace_path,
              stderr_to_stdout: true
            ) do
@@ -333,8 +333,19 @@ defmodule SymphonyElixir.GitHub do
           Logger.info("Tracking remote branch: #{branch}")
           {:ok, branch}
 
-        {output, _status} ->
-          {:error, {:branch_failed, "checkout failed: #{String.trim(output)}"}}
+        # Branch already exists locally (e.g. from a prior attempt)
+        {_output, _status} ->
+          case System.cmd("git", ["checkout", branch],
+                 cd: workspace_path,
+                 stderr_to_stdout: true
+               ) do
+            {_output, 0} ->
+              Logger.info("Switched to existing local branch: #{branch}")
+              {:ok, branch}
+
+            {output, _status} ->
+              {:error, {:branch_failed, "checkout failed: #{String.trim(output)}"}}
+          end
       end
     end
   end
@@ -463,20 +474,21 @@ defmodule SymphonyElixir.GitHub do
          ) do
       {"", 0} -> false
       {_output, 0} -> true
-      # Remote branch doesn't exist yet — this is NOT unpushed work,
-      # it means the issue branch was never created. Return false so
-      # deliver/2 returns :no_changes instead of entering the recovery path.
-      _ -> false
+      # Remote branch doesn't exist yet — check if HEAD has commits
+      # beyond the base branch (handles locally committed but unpushed work)
+      _ -> has_commits_ahead_of_base?(workspace_path)
     end
   end
 
-  @spec remote_branch_missing?(String.t(), Path.t()) :: boolean()
-  defp remote_branch_missing?(branch, workspace_path) do
-    case System.cmd("git", ["remote", "get-url", "origin"],
+  defp has_commits_ahead_of_base?(workspace_path) do
+    base = detect_base_branch(workspace_path)
+
+    case System.cmd("git", ["log", "--oneline", "origin/#{base}..HEAD"],
            cd: workspace_path,
            stderr_to_stdout: true
          ) do
-      {_url, 0} -> !remote_branch_exists?(branch, workspace_path)
+      {"", 0} -> false
+      {_output, 0} -> true
       _ -> false
     end
   end
@@ -554,7 +566,9 @@ defmodule SymphonyElixir.GitHub do
                detect_base_branch(workspace_path),
                "--head",
                branch,
-               "--draft"
+               "--draft",
+               "--label",
+               "symphony"
              ],
              cd: workspace_path,
              stderr_to_stdout: true

@@ -146,7 +146,8 @@ defmodule SymphonyElixir.Claude.Runner do
         # stdin is redirected to /dev/null to prevent BEAM port pipe from
         # blocking CLI reads.
         escaped_args = Enum.map_join(cli_args, " ", &shell_escape/1)
-        script = "#{session.command} #{escaped_args} </dev/null"
+        escaped_cmd = shell_escape(session.command)
+        script = "#{escaped_cmd} #{escaped_args} </dev/null"
         {:local, "/bin/sh", ["-c", script]}
     end
   end
