@@ -674,13 +674,6 @@ defmodule SymphonyElixir.Config.Schema do
   defp default_codex_value(:approval_policy), do: %{"reject" => %{"sandbox_approval" => true, "rules" => true, "mcp_elicitations" => true}}
   defp default_codex_value(:turn_sandbox_policy), do: nil
 
-  # Must match Claude embedded_schema defaults exactly.
-  defp default_claude_value(:command), do: "claude"
-  defp default_claude_value(:turn_timeout_ms), do: 300_000
-  defp default_claude_value(:stall_timeout_ms), do: 60_000
-  defp default_claude_value(:max_turns), do: 10
-  defp default_claude_value(_), do: nil
-
   defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
     do: workspace
 

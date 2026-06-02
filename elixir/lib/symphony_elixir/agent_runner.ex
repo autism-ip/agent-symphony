@@ -46,11 +46,15 @@ defmodule SymphonyElixir.AgentRunner do
           end
 
         case run_result do
-          :ok -> attempt_delivery(issue, workspace, worker_host)
+          :ok ->
+            attempt_delivery(issue, workspace, worker_host)
+
           {:ok, :max_turns} ->
             Logger.info("Deferring delivery for #{issue_context(issue)}: max_turns exhausted")
             :ok
-          error -> error
+
+          error ->
+            error
         end
 
       {:error, reason} ->
@@ -271,6 +275,7 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp do_attempt_delivery(%Issue{} = issue, workspace) do
     Logger.info("Attempting delivery for #{issue_context(issue)}")
+
     case GitHub.deliver(issue, workspace) do
       {:ok, delivery} ->
         Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")
