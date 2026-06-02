@@ -62,19 +62,9 @@ defmodule SymphonyElixir.GitHub do
   end
 
   defp deliver_in_repo(issue, workspace_path) do
-    has_dirty = has_dirty_files?(workspace_path)
-    has_unpushed = has_dirty or has_unpushed_commits?(branch_name(issue), workspace_path)
-
-    if has_dirty or has_unpushed do
-      deliver_with_gh(issue, workspace_path, has_dirty)
-    else
-      {:error, :no_changes}
-    end
-  end
-
-  defp deliver_with_gh(issue, workspace_path, has_dirty) do
     with :ok <- verify_gh_available() do
       branch = current_branch_or_fallback(issue, workspace_path)
+      has_dirty = has_dirty_files?(workspace_path)
 
       cond do
         has_dirty ->
@@ -104,7 +94,7 @@ defmodule SymphonyElixir.GitHub do
   # Full pipeline: branch → commit → push → PR
   defp deliver_full_pipeline(issue, branch, workspace_path) do
     with :ok <- ensure_git_author(workspace_path),
-         {:ok, ^branch} <- create_branch(issue, workspace_path),
+         {:ok, branch} <- create_branch(issue, workspace_path),
          :ok <- commit_changes(issue, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
          :ok <- push_branch(branch, workspace_path),
@@ -115,7 +105,7 @@ defmodule SymphonyElixir.GitHub do
 
   # Recovery pipeline: push unpushed commits → PR (skips commit)
   defp deliver_push_and_pr(issue, branch, workspace_path) do
-    with {:ok, ^branch} <- ensure_branch(branch, workspace_path),
+    with {:ok, branch} <- ensure_branch(branch, workspace_path),
          :ok <- push_branch(branch, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
          {:ok, pr_number, pr_url} <- find_or_create_pr(issue, branch, workspace_path) do
