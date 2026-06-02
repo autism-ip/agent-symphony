@@ -64,6 +64,7 @@ defmodule SymphonyElixir.GitHub do
   defp deliver_in_repo(issue, workspace_path) do
     with :ok <- verify_gh_available() do
       branch = current_branch_or_fallback(issue, workspace_path)
+      branch = if branch_has_closed_pr?(branch, workspace_path), do: branch_name(issue), else: branch
       has_dirty = has_dirty_files?(workspace_path)
 
       cond do
@@ -568,6 +569,27 @@ defmodule SymphonyElixir.GitHub do
     end
   end
 
+  # Detect closed/merged PRs for the branch — if found, the branch is stale
+  # and should not be reused for a new delivery.
+  @spec branch_has_closed_pr?(String.t(), Path.t()) :: boolean()
+  defp branch_has_closed_pr?(branch, workspace_path) do
+    case System.cmd(
+           "gh",
+           ["pr", "list", "--head", branch, "--state", "closed", "--json", "number", "--limit", "1"],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        case Jason.decode(String.trim(output)) do
+          {:ok, [_ | _]} -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
   @spec create_draft_pr(Issue.t(), String.t(), Path.t()) ::
           {:ok, integer(), String.t()} | {:error, delivery_error()}
   defp create_draft_pr(%Issue{} = issue, branch, workspace_path) do
@@ -684,7 +706,7 @@ defmodule SymphonyElixir.GitHub do
   defp normalize_check_rollup(checks) when is_list(checks) do
     cond do
       checks == [] ->
-        "SUCCESS"
+        "PENDING"
 
       Enum.all?(checks, &check_completed_and_successful?(&1)) ->
         "SUCCESS"
