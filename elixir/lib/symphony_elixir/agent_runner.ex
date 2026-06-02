@@ -47,7 +47,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         case run_result do
           :ok ->
-            attempt_delivery(issue, workspace, worker_host)
+            attempt_delivery(issue, workspace, worker_host, codex_update_recipient)
 
           {:ok, :max_turns} ->
             Logger.info("Deferring delivery for #{issue_context(issue)}: max_turns exhausted")
@@ -264,22 +264,22 @@ defmodule SymphonyElixir.AgentRunner do
   # GitHub delivery (best-effort, post-run)
   # ------------------------------------------------------------------
 
-  defp attempt_delivery(%Issue{} = issue, workspace, worker_host) do
+  defp attempt_delivery(%Issue{} = issue, workspace, worker_host, recipient) do
     if worker_host do
       Logger.warning("Skipping delivery for #{issue_context(issue)}: remote worker_host=#{worker_host} not supported yet")
       :ok
     else
-      do_attempt_delivery(issue, workspace)
+      do_attempt_delivery(issue, workspace, recipient)
     end
   end
 
-  defp do_attempt_delivery(%Issue{} = issue, workspace) do
+  defp do_attempt_delivery(%Issue{} = issue, workspace, recipient) do
     Logger.info("Attempting delivery for #{issue_context(issue)}")
 
     case GitHub.deliver(issue, workspace) do
       {:ok, delivery} ->
         Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")
-        report_delivery(issue, delivery)
+        report_delivery(issue, delivery, recipient)
         :ok
 
       {:error, :no_changes} ->
@@ -292,24 +292,21 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp report_delivery(%Issue{id: issue_id, identifier: identifier}, delivery) do
-    case Process.whereis(SymphonyElixir.Orchestrator) do
-      nil ->
-        :ok
+  defp report_delivery(%Issue{id: issue_id, identifier: identifier}, delivery, recipient)
+       when is_pid(recipient) do
+    send(
+      recipient,
+      {:delivery_complete, issue_id,
+       %{
+         identifier: identifier,
+         pr_url: delivery.pr_url,
+         pr_number: delivery.pr_number,
+         branch: delivery.branch
+       }}
+    )
 
-      pid ->
-        send(
-          pid,
-          {:delivery_complete, issue_id,
-           %{
-             identifier: identifier,
-             pr_url: delivery.pr_url,
-             pr_number: delivery.pr_number,
-             branch: delivery.branch
-           }}
-        )
-
-        :ok
-    end
+    :ok
   end
+
+  defp report_delivery(_issue, _delivery, _recipient), do: :ok
 end

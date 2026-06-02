@@ -402,21 +402,26 @@ defmodule SymphonyElixir.Orchestrator do
           |> Map.put(:pr_info, pr_info)
 
         mergeable = Map.get(pr_info, :mergeable, "UNKNOWN")
+        merged = Map.get(pr_info, :merged, false)
 
-        case rollup do
-          "SUCCESS" when mergeable == "MERGEABLE" ->
+        cond do
+          merged ->
+            Logger.info("PR merged for issue_id=#{issue_id} pr_url=#{entry.pr_url}; dropping tracking")
+            %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
+
+          rollup == "SUCCESS" and mergeable == "MERGEABLE" ->
             Logger.info("PR ready for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
             %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
 
-          "SUCCESS" ->
+          rollup == "SUCCESS" ->
             Logger.warning("PR checks pass but not mergeable (#{mergeable}) for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
             %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
 
-          "FAILURE" ->
+          rollup == "FAILURE" ->
             Logger.warning("PR checks failed for issue_id=#{issue_id} pr_url=#{entry.pr_url}")
             %{state | pr_tracking: Map.delete(pr_tracking, issue_id)}
 
-          _ ->
+          true ->
             %{state | pr_tracking: Map.put(pr_tracking, issue_id, updated)}
         end
 
