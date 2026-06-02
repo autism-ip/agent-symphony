@@ -635,32 +635,15 @@ defmodule SymphonyElixir.Config.Schema do
   @doc false
   @spec codex_fallback(t(), atom()) :: term()
   def codex_fallback(settings, field) do
+    top_value = Map.get(settings.codex, field)
+
     case settings.runner do
       %{type: "codex", codex: runner_codex} ->
         runner_value = Map.get(runner_codex, field)
-        top_value = Map.get(settings.codex, field)
         if runner_value != default_codex_value(field), do: runner_value, else: top_value
 
-      %{type: "claude", claude: runner_claude} ->
-        runner_value = Map.get(runner_claude, field)
-        default = default_claude_value(field)
-
-        cond do
-          runner_value != nil and runner_value != default ->
-            # User explicitly set a non-default value in runner.claude
-            runner_value
-
-          runner_value != nil ->
-            # User set a value that happens to equal the Claude default — honor it
-            runner_value
-
-          true ->
-            # Field not set in runner.claude — fall back to top-level codex
-            Map.get(settings.codex, field)
-        end
-
       _ ->
-        Map.get(settings.codex, field)
+        top_value
     end
   end
 

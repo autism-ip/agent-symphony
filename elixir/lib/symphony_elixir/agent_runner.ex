@@ -261,7 +261,16 @@ defmodule SymphonyElixir.AgentRunner do
   # ------------------------------------------------------------------
 
   defp attempt_delivery(%Issue{} = issue, workspace, worker_host) do
-    Logger.info("Attempting delivery for #{issue_context(issue)} worker_host=#{worker_host}")
+    if worker_host do
+      Logger.warning("Skipping delivery for #{issue_context(issue)}: remote worker_host=#{worker_host} not supported yet")
+      :ok
+    else
+      do_attempt_delivery(issue, workspace)
+    end
+  end
+
+  defp do_attempt_delivery(%Issue{} = issue, workspace) do
+    Logger.info("Attempting delivery for #{issue_context(issue)}")
     case GitHub.deliver(issue, workspace) do
       {:ok, delivery} ->
         Logger.info("Delivery succeeded for #{issue_context(issue)}: pr_url=#{delivery.pr_url}")

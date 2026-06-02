@@ -79,7 +79,8 @@ defmodule SymphonyElixir.GitHub do
 
   # Full pipeline: branch → commit → push → PR
   defp deliver_full_pipeline(issue, branch, workspace_path) do
-    with {:ok, ^branch} <- create_branch(issue, workspace_path),
+    with :ok <- ensure_git_author(workspace_path),
+         {:ok, ^branch} <- create_branch(issue, workspace_path),
          :ok <- commit_changes(issue, workspace_path),
          {:ok, commit_sha} <- get_head_sha(workspace_path),
          :ok <- push_branch(branch, workspace_path),
@@ -270,7 +271,7 @@ defmodule SymphonyElixir.GitHub do
   def ready?(%{merged: true}), do: true
   def ready?(%{state: "MERGED"}), do: true
   def ready?(%{state: "OPEN", mergeable: "CONFLICTING"}), do: false
-  def ready?(%{state: "OPEN", status_check_rollup: "SUCCESS"}), do: true
+  def ready?(%{state: "OPEN", mergeable: "MERGEABLE", status_check_rollup: "SUCCESS"}), do: true
 
   def ready?(_pr), do: false
 
@@ -306,6 +307,46 @@ defmodule SymphonyElixir.GitHub do
 
   @spec ensure_branch(String.t(), Path.t()) :: {:ok, String.t()} | {:error, delivery_error()}
   defp ensure_branch(branch, workspace_path) do
+    # If the remote branch exists, track it instead of creating a divergent local branch
+    if remote_branch_exists?(branch, workspace_path) do
+      fetch_and_checkout_remote(branch, workspace_path)
+    else
+      create_local_branch(branch, workspace_path)
+    end
+  end
+
+  @spec fetch_and_checkout_remote(String.t(), Path.t()) ::
+          {:ok, String.t()} | {:error, delivery_error()}
+  defp fetch_and_checkout_remote(branch, workspace_path) do
+    with :ok <- git_fetch_branch(branch, workspace_path) do
+      case System.cmd("git", ["checkout", branch],
+             cd: workspace_path,
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} ->
+          Logger.info("Tracking remote branch: #{branch}")
+          {:ok, branch}
+
+        {output, _status} ->
+          {:error, {:branch_failed, "checkout failed: #{String.trim(output)}"}}
+      end
+    end
+  end
+
+  @spec git_fetch_branch(String.t(), Path.t()) :: :ok | {:error, delivery_error()}
+  defp git_fetch_branch(branch, workspace_path) do
+    case System.cmd("git", ["fetch", "origin", branch],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      {output, _status} -> {:error, {:branch_failed, "fetch failed: #{String.trim(output)}"}}
+    end
+  end
+
+  @spec create_local_branch(String.t(), Path.t()) ::
+          {:ok, String.t()} | {:error, delivery_error()}
+  defp create_local_branch(branch, workspace_path) do
     case System.cmd("git", ["checkout", "-b", branch],
            cd: workspace_path,
            stderr_to_stdout: true
@@ -502,7 +543,7 @@ defmodule SymphonyElixir.GitHub do
                "--body-file",
                body_file,
                "--base",
-               "main",
+               detect_base_branch(workspace_path),
                "--head",
                branch,
                "--draft"
@@ -615,10 +656,19 @@ defmodule SymphonyElixir.GitHub do
   defp normalize_check_rollup(state) when is_binary(state), do: state
   defp normalize_check_rollup(_), do: "PENDING"
 
-  defp check_completed_and_successful?(%{"status" => "COMPLETED", "conclusion" => "SUCCESS"}),
-    do: true
+  defp check_completed_and_successful?(%{"status" => "COMPLETED", "conclusion" => conclusion})
+       when conclusion in ["SUCCESS", "SKIPPED", "NEUTRAL"],
+       do: true
 
-  defp check_completed_and_successful?(%{"conclusion" => "SUCCESS"}), do: true
+  defp check_completed_and_successful?(%{"conclusion" => conclusion})
+       when conclusion in ["SUCCESS", "SKIPPED", "NEUTRAL"],
+       do: true
+
+  # Legacy status contexts (not CheckRuns) use "state" instead of "conclusion"
+  defp check_completed_and_successful?(%{"state" => state})
+       when state in ["SUCCESS", "EXPECTED"],
+       do: true
+
   defp check_completed_and_successful?(_), do: false
 
   defp check_failed?(%{"conclusion" => conclusion})
@@ -665,6 +715,32 @@ defmodule SymphonyElixir.GitHub do
       {_output, 0} -> true
       _ -> false
     end
+  end
+
+  @spec detect_base_branch(Path.t()) :: String.t()
+  defp detect_base_branch(workspace_path) do
+    case System.cmd("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+           cd: workspace_path,
+           stderr_to_stdout: true
+         ) do
+      {"origin/" <> branch, 0} -> String.trim(branch)
+      _ -> "main"
+    end
+  end
+
+  @spec ensure_git_author(Path.t()) :: :ok
+  defp ensure_git_author(workspace_path) do
+    System.cmd("git", ["config", "user.name", "Symphony Agent"],
+      cd: workspace_path,
+      stderr_to_stdout: true
+    )
+
+    System.cmd("git", ["config", "user.email", "symphony@agent.local"],
+      cd: workspace_path,
+      stderr_to_stdout: true
+    )
+
+    :ok
   end
 
   defp gh(args) do
