@@ -54,43 +54,49 @@ defmodule SymphonyElixir.GitHub do
   """
   @spec deliver(Issue.t(), Path.t()) :: {:ok, delivery_result()} | {:error, delivery_error()}
   def deliver(%Issue{} = issue, workspace_path) when is_binary(workspace_path) do
-    # A non-git workspace has nothing to deliver.
-    if not git_repo?(workspace_path) do
-      {:error, :no_changes}
+    if git_repo?(workspace_path) do
+      deliver_in_repo(issue, workspace_path)
     else
-      # Check for changes first — a clean workspace is a no-op that does not need gh.
-      has_dirty = has_dirty_files?(workspace_path)
+      {:error, :no_changes}
+    end
+  end
 
-      if not has_dirty and not has_unpushed_commits?(branch_name(issue), workspace_path) do
-        {:error, :no_changes}
-      else
-        with :ok <- verify_gh_available() do
-          branch = current_branch_or_fallback(issue, workspace_path)
-          has_unpushed = has_unpushed_commits?(branch, workspace_path)
+  defp deliver_in_repo(issue, workspace_path) do
+    has_dirty = has_dirty_files?(workspace_path)
+    has_unpushed = has_dirty or has_unpushed_commits?(branch_name(issue), workspace_path)
 
-          cond do
-            has_dirty ->
-              deliver_full_pipeline(issue, branch, workspace_path)
+    if has_dirty or has_unpushed do
+      deliver_with_gh(issue, workspace_path, has_dirty)
+    else
+      {:error, :no_changes}
+    end
+  end
 
-            has_unpushed ->
-              deliver_push_and_pr(issue, branch, workspace_path)
+  defp deliver_with_gh(issue, workspace_path, has_dirty) do
+    with :ok <- verify_gh_available() do
+      branch = current_branch_or_fallback(issue, workspace_path)
 
-            !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
-              Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
+      cond do
+        has_dirty ->
+          deliver_full_pipeline(issue, branch, workspace_path)
 
-              case find_or_create_pr(issue, branch, workspace_path) do
-                {:ok, pr_number, pr_url} ->
-                  {:ok, commit_sha} = get_head_sha(workspace_path)
-                  {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+        has_unpushed_commits?(branch, workspace_path) ->
+          deliver_push_and_pr(issue, branch, workspace_path)
 
-                {:error, reason} ->
-                  {:error, reason}
-              end
+        !has_pr?(branch, workspace_path) && remote_branch_exists?(branch, workspace_path) ->
+          Logger.info("Branch pushed but no PR exists; creating PR for #{issue.identifier}")
 
-            true ->
-              {:error, :no_changes}
+          case find_or_create_pr(issue, branch, workspace_path) do
+            {:ok, pr_number, pr_url} ->
+              {:ok, commit_sha} = get_head_sha(workspace_path)
+              {:ok, delivery_result(branch, commit_sha, pr_number, pr_url, issue)}
+
+            {:error, reason} ->
+              {:error, reason}
           end
-        end
+
+        true ->
+          {:error, :no_changes}
       end
     end
   end
